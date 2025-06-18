@@ -198,18 +198,18 @@ import subprocess
 import os
 
 def find_stockfish_path():
-    """Find Stockfish executable in common locations"""
+    """Find Stockfish executable in known locations, prioritizing local file for Windows."""
     possible_paths = [
-        "stockfish",  # If in PATH
-        "/usr/bin/stockfish",  # Linux
-        "/usr/local/bin/stockfish",  # macOS with Homebrew
-        "/opt/homebrew/bin/stockfish",  # macOS with Apple Silicon Homebrew
-        "C:\\Program Files\\Stockfish\\stockfish.exe",  # Windows
-        "C:\\stockfish\\stockfish.exe",  # Windows alternative
-        "./stockfish",  # Local directory
-        "./stockfish.exe",  # Local directory Windows
+        "./stockfish.exe",          # Local Windows file
+        "./stockfish",              # Local Unix/Mac file
+        "C:\\Program Files\\Stockfish\\stockfish.exe",
+        "C:\\stockfish\\stockfish.exe",
+        "/usr/bin/stockfish",
+        "/usr/local/bin/stockfish",
+        "/opt/homebrew/bin/stockfish",
+        "stockfish",                # System PATH
     ]
-    
+
     for path in possible_paths:
         try:
             result = subprocess.run([path, "--help"], capture_output=True, timeout=5)
@@ -217,48 +217,40 @@ def find_stockfish_path():
                 return path
         except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
             continue
-    
+
     return None
+
 
 @st.cache_data(ttl=3600, show_spinner="Analyzing game with Stockfish...")
 def analyze_game_with_stockfish(pgn_data, depth=20, time_limit=1.0):
-    """
-    Analyze a chess game using Stockfish engine
-    
-    Args:
-        pgn_data: PGN string of the game
-        depth: Analysis depth (higher = more accurate but slower)
-        time_limit: Time limit per move in seconds
-    
-    Returns:
-        tuple: (game_info, analysis_data) or (None, None) if error
-    """
+    import traceback
+
     try:
         # Find Stockfish
         stockfish_path = find_stockfish_path()
         if not stockfish_path:
             st.error("""
-            Stockfish engine not found. Please install Stockfish:
+            ❌ **Stockfish engine not found.**
+            Please place `stockfish.exe` in the same folder as this app, or install Stockfish:
             
-            **Linux/Ubuntu:** `sudo apt-get install stockfish`
-            **macOS:** `brew install stockfish`
-            **Windows:** Download from https://stockfishchess.org/download/
-            
-            Or ensure stockfish is in your PATH.
+            - **Windows:** https://stockfishchess.org/download
+            - **macOS:** `brew install stockfish`
+            - **Linux:** `sudo apt install stockfish`
             """)
             return None, None
-        
+
+        st.info(f"✅ Using Stockfish at: `{stockfish_path}`")
+
         # Parse the PGN
         try:
             game = chess.pgn.read_game(io.StringIO(pgn_data))
             if not game:
-                st.error("Invalid PGN format. Please check your PGN data.")
+                st.error("❌ Invalid PGN format. Please check your PGN.")
                 return None, None
         except Exception as e:
-            st.error(f"PGN parsing error: {e}")
+            st.error(f"PGN parsing failed: {e}")
             return None, None
-        
-        # Extract game information
+
         game_info = {
             'white': game.headers.get('White', 'Unknown'),
             'black': game.headers.get('Black', 'Unknown'),
@@ -268,55 +260,51 @@ def analyze_game_with_stockfish(pgn_data, depth=20, time_limit=1.0):
             'eco': game.headers.get('ECO', ''),
             'opening': game.headers.get('Opening', ''),
         }
-        
-        # Initialize Stockfish engine
-        with chess.engine.SimpleEngine.popen_uci(stockfish_path) as engine:
+
+        # Start engine
+        try:
+            engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
+        except Exception as e:
+            st.error(f"❌ Could not launch Stockfish: {e}")
+            return None, None
+
+        with engine:
             board = game.board()
             moves = list(game.mainline_moves())
             analysis_data = []
-            
+
             total_moves = len(moves)
             progress_bar = st.progress(0)
             status_text = st.empty()
-            
-            # Analyze each position
+
             for i, move in enumerate(moves):
-                status_text.text(f"Analyzing move {i + 1}/{total_moves}: {board.san(move)}")
-                progress_bar.progress((i + 1) / total_moves)
-                
-                # Get evaluation before the move
                 try:
+                    status_text.text(f"Analyzing move {i + 1}/{total_moves}: {board.san(move)}")
+                    progress_bar.progress((i + 1) / total_moves)
+
                     info = engine.analyse(board, chess.engine.Limit(depth=depth, time=time_limit))
                     score = info.get("score")
-                    
+
                     if score:
-                        # Convert score to centipawns from White's perspective
                         if score.is_mate():
-                            if board.turn == chess.WHITE:
-                                eval_cp = 10000 if score.white().mate() > 0 else -10000
-                                mate_in = abs(score.white().mate())
-                            else:
-                                eval_cp = -10000 if score.white().mate() > 0 else 10000
-                                mate_in = abs(score.white().mate())
+                            mate = score.white().mate()
+                            eval_cp = 10000 if mate > 0 else -10000
+                            mate_in = abs(mate)
                         else:
                             eval_cp = score.white().score()
                             mate_in = None
                     else:
                         eval_cp = 0
                         mate_in = None
-                    
-                    # Get best move
+
                     best_move = info.get("pv", [None])[0]
                     best_move_san = board.san(best_move) if best_move else ""
-                    
-                    # Make the actual move
+
                     actual_move_san = board.san(move)
                     board.push(move)
-                    
-                    # Get evaluation after the move
-                    post_move_info = engine.analyse(board, chess.engine.Limit(depth=depth, time=time_limit))
-                    post_score = post_move_info.get("score")
-                    
+
+                    post_info = engine.analyse(board, chess.engine.Limit(depth=depth, time=time_limit))
+                    post_score = post_info.get("score")
                     if post_score:
                         if post_score.is_mate():
                             post_eval_cp = 10000 if post_score.white().mate() > 0 else -10000
@@ -324,28 +312,21 @@ def analyze_game_with_stockfish(pgn_data, depth=20, time_limit=1.0):
                             post_eval_cp = post_score.white().score()
                     else:
                         post_eval_cp = 0
-                    
-                    # Calculate move quality
-                    eval_loss = abs(post_eval_cp - eval_cp) if eval_cp is not None and post_eval_cp is not None else 0
-                    
-                    # Classify move quality
+
+                    eval_loss = abs(post_eval_cp - eval_cp) if eval_cp is not None else 0
+
                     if eval_loss < 10:
-                        move_quality = "Excellent"
-                        quality_symbol = "!!"
+                        move_quality = "Excellent"; symbol = "!!"
                     elif eval_loss < 25:
-                        move_quality = "Good"
-                        quality_symbol = "!"
+                        move_quality = "Good"; symbol = "!"
                     elif eval_loss < 50:
-                        move_quality = "Inaccuracy"
-                        quality_symbol = "?!"
+                        move_quality = "Inaccuracy"; symbol = "?!"
                     elif eval_loss < 100:
-                        move_quality = "Mistake"
-                        quality_symbol = "?"
+                        move_quality = "Mistake"; symbol = "?"
                     else:
-                        move_quality = "Blunder"
-                        quality_symbol = "??"
-                    
-                    analysis_entry = {
+                        move_quality = "Blunder"; symbol = "??"
+
+                    analysis_data.append({
                         'move_number': (i // 2) + 1,
                         'color': 'White' if i % 2 == 0 else 'Black',
                         'move': actual_move_san,
@@ -355,24 +336,23 @@ def analyze_game_with_stockfish(pgn_data, depth=20, time_limit=1.0):
                         'eval_loss': eval_loss,
                         'mate_in': mate_in,
                         'move_quality': move_quality,
-                        'quality_symbol': quality_symbol,
+                        'quality_symbol': symbol,
                         'is_best_move': actual_move_san == best_move_san
-                    }
-                    
-                    analysis_data.append(analysis_entry)
-                    
+                    })
+
                 except Exception as e:
-                    st.warning(f"Error analyzing move {i + 1}: {e}")
+                    st.warning(f"Move {i + 1} analysis failed: {e}")
                     continue
-            
+
             progress_bar.empty()
             status_text.empty()
-            
+
             return game_info, analysis_data
-            
+
     except Exception as e:
-        st.error(f"Unexpected error during Stockfish analysis: {e}")
+        st.error(f"🔥 Unexpected error during Stockfish analysis:\n```\n{traceback.format_exc()}\n```")
         return None, None
+
 
 # --- Test PGN Data ---
 TEST_PGN = """[Event "Live Chess"]

@@ -16,6 +16,7 @@ import httpx
 import time
 import json
 import traceback
+from stockfish import Stockfish
 
 # --- PAGE CONFIG ---
 st.set_page_config(layout="wide", page_title="Chess Dashboard")
@@ -243,8 +244,19 @@ def generate_move_comment(move_data):
         return f"A major blunder! This move changes the outcome of the game. The best move was {best_move}."
     return ""
 
-@st.cache_data(ttl=3600, show_spinner="Analyzing game with cloud engine...")
-def analyze_game_with_api(pgn_data, depth=18):
+@st.cache_data(ttl=3600, show_spinner="Analyzing game with local engine...")
+def analyze_game_with_stockfish(pgn_data, stockfish_path="stockfish"):
+    """
+    Analyzes a game using a local Stockfish engine.
+    You must have Stockfish installed and in your system's PATH,
+    or provide the full path to the executable.
+    """
+    try:
+        stockfish = Stockfish(path=stockfish_path)
+    except Exception as e:
+        st.error(f"Could not initialize Stockfish. Make sure it's installed and in your PATH, or provide the correct path. Error: {e}")
+        return None, None, None
+
     try:
         game = chess.pgn.read_game(io.StringIO(pgn_data))
         if not game:
@@ -276,25 +288,20 @@ def analyze_game_with_api(pgn_data, depth=18):
                 status_text.text(f"Analyzing move {i + 1}/{total_moves} ({turn}'s turn)...")
                 progress_bar.progress((i + 1) / total_moves)
 
-                fen_before = board.fen()
-                api_response_before = requests.post("https://chess-api.com/v1", json={"fen": fen_before, "depth": depth})
-                api_response_before.raise_for_status()
-                data_before = api_response_before.json()
-                eval_before = data_before.get('eval')
-                best_move_san = data_before.get('bestmove')
+                stockfish.set_fen_position(board.fen())
+                eval_before = stockfish.get_evaluation()
+                best_move_uci = stockfish.get_best_move()
+                best_move_san = board.san(chess.Move.from_uci(best_move_uci)) if best_move_uci else None
 
                 actual_move_san = board.san(move)
                 board.push(move)
                 board_states.append(board.fen())
 
-                fen_after = board.fen()
-                api_response_after = requests.post("https://chess-api.com/v1", json={"fen": fen_after, "depth": depth})
-                api_response_after.raise_for_status()
-                data_after = api_response_after.json()
-                eval_after = data_after.get('eval')
+                stockfish.set_fen_position(board.fen())
+                eval_after = stockfish.get_evaluation()
 
-                if eval_before is not None and eval_after is not None:
-                    eval_loss = (eval_before - eval_after) if turn == "White" else (eval_after - eval_before)
+                if eval_before['type'] == 'cp' and eval_after['type'] == 'cp':
+                    eval_loss = (eval_before['value'] - eval_after['value']) if turn == "White" else (eval_after['value'] - eval_before['value'])
                 else:
                     eval_loss = 0
 
@@ -310,8 +317,8 @@ def analyze_game_with_api(pgn_data, depth=18):
                     'color': turn,
                     'move': actual_move_san,
                     'best_move': best_move_san,
-                    'eval_before': eval_before,
-                    'eval_after': eval_after,
+                    'eval_before': eval_before.get('value'),
+                    'eval_after': eval_after.get('value'),
                     'eval_loss': eval_loss / 100.0,
                     'move_quality': move_quality,
                 }
@@ -327,7 +334,7 @@ def analyze_game_with_api(pgn_data, depth=18):
         return game_info, analysis_data, board_states
 
     except Exception as e:
-        st.error(f"🔥 Unexpected error during API analysis:\n```\n{traceback.format_exc()}\n```")
+        st.error(f"🔥 Unexpected error during local analysis:\n```\n{traceback.format_exc()}\n```")
         return None, None, None
 
 # --- Test PGN Data ---
@@ -345,7 +352,7 @@ TEST_PGN = """[Event "Live Chess"]
 [EndTime "14:32:18 PST"]
 [Termination "TestPlayer1 won by checkmate"]
 
-1. e4 e5 2. Nf3 Nc6 3. Bb5 Nf6 4. d3 Bc5 5. O-O d6 6. c3 a6 7. Ba4 b5 8. Bb3 O-O 9. h3 h6 10. Re1 Re8 11. Nbd2 Be6 12. Bc2 d5 13. exd5 Bxd5 14. Ne4 Nxe4 15. dxe4 Be6 16. Qe2 Qf6 17. Be3 Bxe3 18. Qxe3 Rad8 19. a4 Bc4 20. b3 Be6 21. axb5 axb5 22. Qc5 Bxh3 23. Qxb5 Bg4 24. Nh2 Bd7 25. Qe2 Ne7 26. Ra7 Qb6 27. Rea1 Ng6 28. g3 Bb5 29. c4 Bc6 30. R1a6 Qc5 31. Rxc7 Re6 32. b4 Qd6 33. Raa7 Be8 34. c5 Qd2 35. Qxd2 Rxd2 36. Ba4 Bxa4 37. Rxa4 Re7 38. Rc8+ Kh7 39. b5 Rb2 40. b6 Rd7 41. Ra7 Rd1+ 42. Kg2 Rbb1 43. b7 Rg1+ 44. Kf3 Rb3+ 45. Ke2 Rgb1 46. c6 Ne7 47. Re8 Nxc6 48. Rc7 Nd4+ 49. Kd2 R1b2+ 50. Kc1 Ne2+ 51. Kd1 Nc3+ 52. Kc1 Na2+ 53. Kd1 Rxb7 54. Rxb7 Rxb7 55. Rxe5 Nc3+ 56. Kd2 Nb1+ 57. Kd3 Na3 58. f4 Rd7+ 59. Ke3 Nc4+ 60. Kf3 Nxe5+ 61. fxe5 Re7 62. Kf4 g5+ 63. Kf5 Kg7 64. Ng4 Re6 65. Nf6 Ra6 66. g4 Ra1 67. Nh5+ Kf8 68. Kf6 Ra6+ 69. Kf5 Ke7 70. Nf6 Ra1 71. Ng8+ Kf8 72. Nxh6 Rf1+ 73. Kxg5 Ke7 74. Nf5+ Ke6 75. Ng7+ Kxe5 76. Kh6 Kxe4 77. g5 Rh1+ 78. Nh5 Kf5 79. g6 fxg6 80. Kg7 Rxh5 81. Kf7 g5 1-0"""
+1. e4 e5 2. Nf3 Nc6 3. Bb5 Nf6 4. d3 Bc5 5. O-O d6 6. c3 a6 7. Ba4 b5 8. Bb3 O-O 9. h3 h6 10. Re1 Re8 11. Nbd2 Be6 12. Bc2 d5 13. exd5 Bxd5 14. Ne4 Nxe4 15. dxe4 Be6 16. Qe2 Qf6 17. Be3 Bxe3 18. Qxe3 Rad8 19. a4 Bc4 20. b3 Be6 21. axb5 axb5 22. Qc5 Bxh3 23. Qxb5 Bg4 24. Nh2 Bd7 25. Qe2 Ne7 26. Ra7 Qb6 27. Rea1 Ng6 28. g3 Bb5 29. c4 Bc6 30. R1a6 Qc5 31. Rxc7 Re6 32. b4 Qd6 33. Raa7 Be8 34. c5 Qd2 35. Qxd2 Rxd2 36. Ba4 Bxa4 37. Rxa4 Re7 38. Rc8+ Kh7 39. b5 Rb2 40. b6 Rd7 41. Ra7 Rd1+ 42. Kg2 Rbb1 43. b7 Rg1+ 44. Kf3 Rb3+ 45. Ke2 Rgb1 46. c6 Ne7 47. Re8 Nxc6 48. Rc7 Nd4+ 49. Kd2 R1b2+ 50. Kc1 Ne2+ 51. Kd1 Nc3+ 52. Kc1 Na2+ 53. Kd1 Rxb7 54. Rxb7 Rxb7 55. Rxe5 Nc3+ 56. Kd2 Nb1+ 57. Kd3 Na3 58. f4 Rd7+ 59. Ke3 Nc4+ 60. Kf3 Nxe5+ 61. fxe5 Re7 62. Kf4 g5+ 63. Kf5 Kg7 64. ng4 Re6 65. Nf6 Ra6 66. g4 Ra1 67. Nh5+ Kf8 68. Kf6 Ra6+ 69. Kf5 Ke7 70. Nf6 Ra1 71. Ng8+ Kf8 72. Nxh6 Rf1+ 73. kxg5 Ke7 74. Nf5+ Ke6 75. Ng7+ Kxe5 76. Kh6 Kxe4 77. g5 Rh1+ 78. Nh5 Kf5 79. g6 fxg6 80. Kg7 Rxh5 81. Kf7 g5 1-0"""
 
 # --- Streamlit Layout ---
 tab = st.sidebar.radio("Navigate", ["Dashboard", "Player Stats", "Game Analysis"])
@@ -459,7 +466,7 @@ elif tab == "Player Stats":
 # --- Game Analysis Tab ---
 elif tab == "Game Analysis":
     st.title("🔍 Game Analysis")
-    st.markdown("Paste the PGN of a game below to get a full computer analysis from a cloud engine.")
+    st.markdown("Paste the PGN of a game below to get a full computer analysis from a local engine.")
 
     col1, col2 = st.columns([3, 1])
     with col1:
@@ -470,9 +477,6 @@ elif tab == "Game Analysis":
             st.session_state.pgn_text = TEST_PGN
             st.rerun()
 
-    with st.expander("Analysis Settings"):
-        depth = st.slider("Analysis Depth", 10, 22, 18, help="Higher depth is more accurate but much slower. The free API is best at depth 18.")
-
     col1, col2 = st.columns(2)
     with col1:
         if st.button("🔍 Analyze Game", type="primary"):
@@ -481,13 +485,13 @@ elif tab == "Game Analysis":
             else:
                 st.session_state.pgn_text = pgn_text_input
                 st.session_state.current_ply = 0
-                game_info, analysis, boards = analyze_game_with_api(pgn_text_input, depth)
+                game_info, analysis, boards = analyze_game_with_stockfish(pgn_text_input)
                 if game_info and analysis and boards:
                     st.session_state.analysis_results = (game_info, analysis)
                     st.session_state.board_states = boards
                     st.balloons()
                 else:
-                    st.error("Could not analyze game. Check PGN or API status.")
+                    st.error("Could not analyze game. Make sure Stockfish is installed and configured correctly.")
     with col2:
         if st.button("🗑️ Clear Analysis"):
             st.session_state.analysis_results = None

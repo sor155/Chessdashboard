@@ -5,3 +5,4 @@ pandas
 altair
 requests
 python-chess
+stockfish

@@ -24,11 +24,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Create Google Credentials File
-        run: echo '${{ secrets.GCP_SA_KEY }}' > google-credentials.json
-        shell: bash
-
       - name: Run update script
         env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
         run: python update_sheets_tracker.py

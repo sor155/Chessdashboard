@@ -1,17 +1,19 @@
 import gspread
+from google.oauth2.service_account import Credentials
 import requests
 from datetime import datetime
 import pandas as pd
 import smtplib
 import ssl
 import os
+import json
 import sys
 
 # --- CONFIGURATION ---
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1YG4z_MEnhpznrf0dtY8FFK_GNXYMYLrfANDigALO0C0/edit?gid=1213756490#gid=1213756490"
-CREDENTIALS_FILE_PATH = "google-credentials.json" # The file created by the GitHub Action
+SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive.file']
 
-# ... (The rest of the configuration section remains the same)
+# ... (rest of configuration is the same)
 ENABLE_EMAIL_NOTIFICATIONS = True
 SENDER_EMAIL = "thesor155@gmail.com"
 RECEIVER_EMAIL = "thesor155@gmail.com"
@@ -30,7 +32,6 @@ friends = [
     ("Alex", "naatiry", ""),
     ("Kevin", "Kevor24", ""),
 ]
-SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive.file']
 
 
 def send_failure_email(error_message):
@@ -51,20 +52,30 @@ def send_failure_email(error_message):
 
 
 def get_credentials():
-    """Authenticates with Google using a credentials file."""
+    """Authenticates with Google using credentials from an environment variable."""
     try:
-        print(f"Attempting to authenticate using file: {CREDENTIALS_FILE_PATH}")
-        client = gspread.service_account(filename=CREDENTIALS_FILE_PATH, scopes=SCOPES)
-        print("Successfully authenticated with Google.")
+        gcp_sa_key_str = os.environ.get("GCP_SA_KEY")
+        if not gcp_sa_key_str:
+            print("FATAL: GCP_SA_KEY environment variable not found.")
+            sys.exit(1)
+
+        # Parse the JSON string from the environment variable into a dictionary
+        creds_dict = json.loads(gcp_sa_key_str)
+
+        # Authenticate using the dictionary
+        creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+        client = gspread.authorize(creds)
+
+        print("✅ Successfully authenticated with Google.")
         return client
-    except FileNotFoundError:
-        print(f"FATAL: Credentials file not found at {CREDENTIALS_FILE_PATH}. Check the GitHub Actions workflow.")
+
+    except json.JSONDecodeError:
+        print("FATAL: Could not parse GCP_SA_KEY. Ensure it's valid JSON and does not contain any extra text or TOML headers.")
         sys.exit(1)
     except Exception as e:
         print(f"FATAL: An unexpected authentication error occurred: {e}")
         sys.exit(1)
 
-# ... (The rest of your script remains the same)
 def get_api_data(username):
     if not username:
         return None
@@ -115,13 +126,13 @@ def run_update():
     """The main function to run a single update."""
     client = get_credentials()
     if not client:
-        print("FATAL: Could not get Google API client.")
+        print("FATAL: Could not get Google API client. Exiting.")
         sys.exit(1)
     
     try:
-        print(f"Attempting to open spreadsheet at URL: {SHEET_URL}")
+        print(f"Attempting to open spreadsheet...")
         spreadsheet = client.open_by_url(SHEET_URL)
-        print("Successfully opened spreadsheet.")
+        print("✅ Successfully opened spreadsheet.")
         
         worksheet_current = spreadsheet.worksheet('Current Ratings')
         worksheet_history = spreadsheet.worksheet('Rating History')
@@ -175,16 +186,15 @@ def run_update():
             "Bullet", "W/L/D Bullet", "Bullet Change"
         ]
         
-        print("Clearing 'Current Ratings' sheet...")
-        worksheet_current.clear()
         print("Updating 'Current Ratings' sheet...")
+        worksheet_current.clear()
         worksheet_current.update('A1', [header_current] + current_ratings_data, value_input_option='USER_ENTERED')
 
         if history_rows_to_append:
-            print("Writing data to 'Rating History' sheet...")
+            print("Updating 'Rating History' sheet...")
             worksheet_history.append_rows(history_rows_to_append, value_input_option='USER_ENTERED')
 
-        print("\n✅ Sheet updates complete!")
+        print("\n✅✅✅ Sheet updates complete!")
 
     except Exception as e:
         print(f"FATAL: An error occurred during the sheet update process: {e}")
@@ -193,6 +203,6 @@ def run_update():
 
 
 if __name__ == "__main__":
-    print(f"\n--- Running update at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---")
+    print(f"--- Running update at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---")
     run_update()
-    print(f"\n--- Update complete. ---")
+    print(f"--- Update process finished. ---")

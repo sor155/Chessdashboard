@@ -53,14 +53,21 @@ def send_failure_email(error_message):
 def get_credentials():
     """Gets credentials from environment variables."""
     try:
-        gcp_sa_key = os.environ.get("GCP_SA_KEY")
-        if not gcp_sa_key:
-            print("GCP_SA_KEY environment variable not set.")
+        gcp_sa_key_str = os.environ.get("GCP_SA_KEY")
+        if not gcp_sa_key_str:
+            print("ERROR: GCP_SA_KEY environment variable not found.")
             return None
         
-        creds_json = json.loads(gcp_sa_key)
+        print("GCP_SA_KEY environment variable found. Attempting to parse JSON.")
+        creds_json = json.loads(gcp_sa_key_str)
+        print("Successfully parsed GCP_SA_KEY JSON.")
+        
         creds = Credentials.from_service_account_info(creds_json, scopes=SCOPES)
+        print("Credentials loaded successfully.")
         return gspread.authorize(creds)
+    except json.JSONDecodeError as e:
+        print(f"ERROR: Could not decode JSON from GCP_SA_KEY. Make sure it's a valid JSON string. Error: {e}")
+        return None
     except Exception as e:
         print(f"Authentication error: {e}")
         return None

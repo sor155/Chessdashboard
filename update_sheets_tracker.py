@@ -1,4 +1,5 @@
 import gspread
+from google.oauth2.service_account import Credentials
 import requests
 from datetime import datetime
 import pandas as pd
@@ -10,7 +11,6 @@ import sys
 
 # --- CONFIGURATION ---
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1YG4z_MEnhpznrf0dtY8FFK_GNXYMYLrfANDigALO0C0/edit?gid=1213756490#gid=1213756490"
-CREDENTIALS_FILE_PATH = "google-credentials.json" # Define a path for the temporary credentials file
 
 # ... (The rest of the configuration section remains the same)
 ENABLE_EMAIL_NOTIFICATIONS = True
@@ -52,37 +52,31 @@ def send_failure_email(error_message):
 
 
 def get_credentials():
-    """Gets credentials by writing the env var to a temporary file."""
-    client = None
+    """Gets credentials from an environment variable and parses it as JSON."""
     try:
         gcp_sa_key_str = os.environ.get("GCP_SA_KEY")
         if not gcp_sa_key_str:
             print("ERROR: GCP_SA_KEY environment variable not found.")
             sys.exit(1)
 
-        # Write the credentials to a temporary file
-        with open(CREDENTIALS_FILE_PATH, "w") as f:
-            f.write(gcp_sa_key_str)
+        # Parse the string into a dictionary
+        creds_json = json.loads(gcp_sa_key_str)
         
-        print("Temporarily created credentials file.")
+        # Authenticate using the dictionary
+        creds = Credentials.from_service_account_info(creds_json, scopes=SCOPES)
+        client = gspread.authorize(creds)
+        
+        print("Successfully authenticated with Google.")
+        return client
 
-        # Authenticate using the file with the recommended gspread helper
-        client = gspread.service_account(filename=CREDENTIALS_FILE_PATH, scopes=SCOPES)
-        
-        print("Successfully authenticated with Google using credentials file.")
-        
-    except Exception as e:
-        print(f"FATAL: Authentication error: {e}")
+    except json.JSONDecodeError:
+        print("FATAL: Could not parse GCP_SA_KEY. Ensure it's valid JSON.")
         sys.exit(1)
-    finally:
-        # Clean up the temporary file
-        if os.path.exists(CREDENTIALS_FILE_PATH):
-            os.remove(CREDENTIALS_FILE_PATH)
-            print("Removed temporary credentials file.")
-    
-    return client
+    except Exception as e:
+        print(f"FATAL: An unexpected authentication error occurred: {e}")
+        sys.exit(1)
 
-# ... (The rest of your script remains the same)
+# ... (The rest of your script, including run_update(), remains exactly the same)
 def get_api_data(username):
     if not username:
         return None

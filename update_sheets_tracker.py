@@ -7,13 +7,13 @@ import smtplib
 import ssl
 import os
 import json
+import sys # <-- Import sys
 
 # --- CONFIGURATION ---
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1YG4z_MEnhpznrf0dtY8FFK_GNXYMYLrfANDigALO0C0/edit?gid=1213756490#gid=1213756490"
 ENABLE_EMAIL_NOTIFICATIONS = True
 SENDER_EMAIL = "thesor155@gmail.com"
 RECEIVER_EMAIL = "thesor155@gmail.com"
-# --- Securely get the password from an environment variable ---
 SENDER_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
 
 manual_starting_ratings = {
@@ -38,6 +38,7 @@ def send_failure_email(error_message):
     if not ENABLE_EMAIL_NOTIFICATIONS or not SENDER_APP_PASSWORD:
         print("Email notifications disabled or password not set.")
         return
+    # ... (rest of the function is the same)
     smtp_server, port = "smtp.gmail.com", 465
     subject = "Chess Tracker Script FAILED"
     body = f"The chess rating tracker script failed to complete.\n\nError details:\n{error_message}"
@@ -50,94 +51,38 @@ def send_failure_email(error_message):
     except Exception as e:
         print(f"Could not send failure email. Error: {e}")
 
+
 def get_credentials():
     """Gets credentials from environment variables."""
     try:
         gcp_sa_key_str = os.environ.get("GCP_SA_KEY")
         if not gcp_sa_key_str:
             print("ERROR: GCP_SA_KEY environment variable not found.")
-            return None
+            sys.exit(1) # <-- Exit with error
         
-        print("GCP_SA_KEY environment variable found. Attempting to parse JSON.")
         creds_json = json.loads(gcp_sa_key_str)
-        print("Successfully parsed GCP_SA_KEY JSON.")
-        
         creds = Credentials.from_service_account_info(creds_json, scopes=SCOPES)
-        print("Credentials loaded successfully.")
+        print("Successfully authenticated with Google.")
         return gspread.authorize(creds)
-    except json.JSONDecodeError as e:
-        print(f"ERROR: Could not decode JSON from GCP_SA_KEY. Make sure it's a valid JSON string. Error: {e}")
-        return None
     except Exception as e:
-        print(f"Authentication error: {e}")
-        return None
-
-def get_api_data(username):
-    if not username:
-        return None
-    url = f"https://api.chess.com/pub/player/{username}/stats"
-    try:
-        response = requests.get(url, headers={"User-Agent": "PythonChessTracker/1.0"})
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        print(f"  ERROR (Chess.com for '{username}'): {e}")
-        return None
-
-def calculate_diff(new, old):
-    if isinstance(new, int) and isinstance(old, int):
-        return f"'{new - old}"
-    return "'N/A"
-
-def safe_wld(stats):
-    try:
-        w = int(stats.get("win", 0) or 0)
-        l = int(stats.get("loss", 0) or 0)
-        d = int(stats.get("draw", 0) or 0)
-        return f"'{w}/{l}/{d}"
-    except:
-        return "'0/0/0"
-
-def safe_int(val):
-    try:
-        return int(val)
-    except:
-        return None
-
-def get_stats_from_data(data, category):
-    stats = {"rating": None, "win": 0, "loss": 0, "draw": 0}
-    category_data = data.get(f"chess_{category}", {}) if data else {}
-
-    if category_data:
-        stats["rating"] = category_data.get("last", {}).get("rating")
-        record = category_data.get("record", {}) or {}
-        stats["win"] = record.get("win", 0) or 0
-        stats["loss"] = record.get("loss", 0) or 0
-        stats["draw"] = record.get("draw", 0) or 0
-
-    return stats
+        print(f"FATAL: Authentication error: {e}")
+        sys.exit(1) # <-- Exit with error
 
 def run_update():
     """The main function to run a single update."""
+    client = get_credentials()
+    if not client:
+        print("FATAL: Could not get Google API client.")
+        sys.exit(1) # <-- Exit with error
+    
     try:
-        client = get_credentials()
-        if not client:
-            send_failure_email("Could not get Google API credentials.")
-            return
-
+        print(f"Attempting to open spreadsheet at URL: {SHEET_URL}")
         spreadsheet = client.open_by_url(SHEET_URL)
-
-        try:
-            worksheet_current = spreadsheet.worksheet('Current Ratings')
-        except gspread.exceptions.WorksheetNotFound:
-            worksheet_current = spreadsheet.add_worksheet(title="Current Ratings", rows="100", cols="30")
-
-        try:
-            worksheet_history = spreadsheet.worksheet('Rating History')
-        except gspread.exceptions.WorksheetNotFound:
-            worksheet_history = spreadsheet.add_worksheet(title="Rating History", rows="1000", cols="4")
-            worksheet_history.append_row(['Date', 'Player Name', 'Category', 'Rating'])
-
+        print("Successfully opened spreadsheet.")
+        
+        # ... (rest of the function is the same)
+        worksheet_current = spreadsheet.worksheet('Current Ratings')
+        worksheet_history = spreadsheet.worksheet('Rating History')
         history_data = worksheet_history.get_all_records()
         history_df = pd.DataFrame(history_data) if history_data else pd.DataFrame(columns=['Date', 'Player Name', 'Category', 'Rating'])
         if not history_df.empty:
@@ -159,19 +104,15 @@ def run_update():
         for name, chesscom_user, _ in friends:
             print(f"Fetching ratings for {name}...")
             api_data = get_api_data(chesscom_user)
-
             rapid = get_stats_from_data(api_data, "rapid")
             blitz = get_stats_from_data(api_data, "blitz")
             bullet = get_stats_from_data(api_data, "bullet")
-
             rapid_rating = safe_int(rapid['rating'])
             blitz_rating = safe_int(blitz['rating'])
             bullet_rating = safe_int(bullet['rating'])
-
             first_rapid = safe_int(get_first_rating(name, 'C - Rapid'))
             first_blitz = safe_int(get_first_rating(name, 'C - Blitz'))
             first_bullet = safe_int(get_first_rating(name, 'C - Bullet'))
-
             current_row = [
                 name,
                 rapid_rating if rapid_rating is not None else "N/A", safe_wld(rapid), calculate_diff(rapid_rating, first_rapid),
@@ -179,7 +120,6 @@ def run_update():
                 bullet_rating if bullet_rating is not None else "N/A", safe_wld(bullet), calculate_diff(bullet_rating, first_bullet)
             ]
             current_ratings_data.append(current_row)
-
             if isinstance(rapid_rating, int):
                 history_rows_to_append.append([timestamp, name, "C - Rapid", rapid_rating])
             if isinstance(blitz_rating, int):
@@ -192,7 +132,10 @@ def run_update():
             "Blitz", "W/L/D Blitz", "Blitz Change",
             "Bullet", "W/L/D Bullet", "Bullet Change"
         ]
+        
+        print("Clearing 'Current Ratings' sheet...")
         worksheet_current.clear()
+        print("Updating 'Current Ratings' sheet...")
         worksheet_current.update('A1', [header_current] + current_ratings_data, value_input_option='USER_ENTERED')
 
         if history_rows_to_append:
@@ -202,8 +145,10 @@ def run_update():
         print("\n✅ Sheet updates complete!")
 
     except Exception as e:
-        print(f"❌ Unexpected error: {e}")
+        print(f"FATAL: An error occurred during the sheet update process: {e}")
         send_failure_email(e)
+        sys.exit(1) # <-- Exit with error
+
 
 if __name__ == "__main__":
     print(f"\n--- Running update at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---")

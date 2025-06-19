@@ -252,7 +252,7 @@ def generate_move_comment(move_data):
     return ""
 
 @st.cache_data(ttl=3600, show_spinner="Analyzing game with local engine...")
-def analyze_game_with_stockfish(pgn_data, stockfish_path="/usr/games/stockfish"):
+def analyze_game_with_stockfish(pgn_data, stockfish_path="/usr/games/stockfish"): # Changed to a common Linux path
     """
     Analyzes a game using a local Stockfish engine.
     """
@@ -260,6 +260,7 @@ def analyze_game_with_stockfish(pgn_data, stockfish_path="/usr/games/stockfish")
         stockfish = Stockfish(path=stockfish_path)
     except Exception as e:
         st.error(f"Could not initialize Stockfish from path: {stockfish_path}. Error: {e}")
+        st.info("Please ensure Stockfish is installed and its path is correct. Common paths include `/usr/games/stockfish` (Linux) or `/usr/local/bin/stockfish` (macOS/Linux). If running on Windows, provide the full path to your `stockfish.exe` (e.g., `C:/Users/YourUser/Downloads/stockfish.exe`).")
         return None, None, None
 
     try:
@@ -519,8 +520,26 @@ elif tab == "Game Analysis":
         board_col, comment_col = st.columns([1, 1])
         
         with board_col:
-            board = chess.Board(st.session_state.board_states[st.session_state.current_ply])
-            st.image(chess.svg.board(board=board, size=400))
+            # Determine the best move for the current ply to draw an arrow
+            current_board_for_arrow = chess.Board(st.session_state.board_states[st.session_state.current_ply])
+            arrows_to_draw = []
+
+            # Get the top engine move for the current position
+            current_analysis_index = st.session_state.current_ply - 1 if st.session_state.current_ply > 0 else 0
+            if analysis_data and current_analysis_index < len(analysis_data) and 'top_engine_lines' in analysis_data[current_analysis_index] and analysis_data[current_analysis_index]['top_engine_lines']:
+                best_move_uci_for_arrow = analysis_data[current_analysis_index]['top_engine_lines'][0]['Move']
+                if best_move_uci_for_arrow:
+                    try:
+                        best_move_obj = chess.Move.from_uci(best_move_uci_for_arrow)
+                        # Create a temporary board at the *exact* FEN of the current_ply
+                        # to ensure SAN conversion is correct for the arrow.
+                        temp_board_for_san = chess.Board(st.session_state.board_states[st.session_state.current_ply])
+                        arrows_to_draw.append(chess.svg.Arrow(best_move_obj.from_square, best_move_obj.to_square, color="#008000")) # Green arrow
+                    except ValueError:
+                        pass
+
+
+            st.image(chess.svg.board(board=current_board_for_arrow, size=400, arrows=arrows_to_draw), use_container_width=True)
             
             # Display eval bar below the board
             # If current_ply is 0 (initial position), evaluation is typically 0.
@@ -554,11 +573,46 @@ elif tab == "Game Analysis":
                 
                 # Display move quality with appropriate styling
                 quality = move_data['move_quality']
-                if quality == "Excellent": st.success(f"**{quality}!** {move_data['comment']}")
-                elif quality == "Good": st.info(f"**{quality}.** {move_data['comment']}")
-                elif quality == "Inaccuracy": st.warning(f"**{quality}.** {move_data['comment']}")
-                else: st.error(f"**{quality}!** {move_data['comment']}")
-            else:
+                if quality == "Excellent": 
+                    st.success(f"**{quality}!** {move_data['comment']}")
+                elif quality == "Good": 
+                    st.info(f"**{quality}.** {move_data['comment']}")
+                elif quality == "Inaccuracy": 
+                    st.warning(f"**{quality}.** {move_data['comment']}")
+                else: # Mistake or Blunder
+                    st.error(f"**{quality}!** {move_data['comment']}")
+                
+                # Show engine's best move suggestion and eval loss
+                if move_data['best_move'] and move_data['move'] != move_data['best_move']:
+                    st.markdown(f"Engine's best move: **{move_data['best_move']}**")
+                    if move_data['eval_loss'] > 0:
+                        st.markdown(f"Evaluation loss: **-{move_data['eval_loss']:.2f} pawns**")
+                
+                st.markdown("---") # Separator for clarity
+                st.subheader("Engine Lines (Top 3)")
+                # Display top engine lines for the *current* board position (before the played move)
+                # Note: For current_ply > 0, we look at the 'top_engine_lines' of the *previous* move analysis
+                # because those were the lines calculated *before* the current displayed move was played.
+                if current_ply > 0 and 'top_engine_lines' in analysis_data[current_ply - 1]:
+                    top_lines = analysis_data[current_ply - 1]['top_engine_lines']
+                    if top_lines:
+                        # Create a temporary board for SAN conversion of engine lines
+                        temp_board_for_engine_lines = chess.Board(st.session_state.board_states[current_ply - 1])
+                        for line in top_lines:
+                            move_uci = line['Move']
+                            try:
+                                san_move = temp_board_for_engine_lines.san(chess.Move.from_uci(move_uci))
+                                eval_cp = line['Centipawn']
+                                eval_pawns = eval_cp / 100.0
+                                st.markdown(f"- **{san_move}** (Eval: {eval_pawns:.2f})")
+                            except Exception as e:
+                                st.markdown(f"- **{move_uci}** (Eval: {line.get('Centipawn', 'N/A')}) - Error parsing move: {e}")
+                    else:
+                        st.info("No top engine lines available for this position.")
+                else:
+                    st.info("Top engine lines will appear here after analysis.")
+
+            else: # Initial position (current_ply == 0)
                 st.subheader("Starting Position")
                 st.info("Use the navigation buttons to step through the game and see the analysis.")
                 
@@ -592,4 +646,4 @@ elif tab == "Game Analysis":
 
         # Download button for the full analysis CSV
         csv = df_display.to_csv(index=False)
-        st.download_button("📥 Download Full Analysis (CSV)", csv, f"analysis_{game_info['white']}_vs_{game_info['black']}.csv")
+        st.download_button("📥 Download Full Analysis (CSV)", csv, f"analysis_{game_info['white']}_vs_{game_info['black']}.csv", "text/csv")

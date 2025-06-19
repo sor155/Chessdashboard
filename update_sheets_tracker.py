@@ -1,16 +1,15 @@
 import gspread
-from google.oauth2.service_account import Credentials
 import requests
 from datetime import datetime
 import pandas as pd
 import smtplib
 import ssl
 import os
-import json
 import sys
 
 # --- CONFIGURATION ---
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1YG4z_MEnhpznrf0dtY8FFK_GNXYMYLrfANDigALO0C0/edit?gid=1213756490#gid=1213756490"
+CREDENTIALS_FILE_PATH = "google-credentials.json" # The file created by the GitHub Action
 
 # ... (The rest of the configuration section remains the same)
 ENABLE_EMAIL_NOTIFICATIONS = True
@@ -52,31 +51,20 @@ def send_failure_email(error_message):
 
 
 def get_credentials():
-    """Gets credentials from an environment variable and parses it as JSON."""
+    """Authenticates with Google using a credentials file."""
     try:
-        gcp_sa_key_str = os.environ.get("GCP_SA_KEY")
-        if not gcp_sa_key_str:
-            print("ERROR: GCP_SA_KEY environment variable not found.")
-            sys.exit(1)
-
-        # Parse the string into a dictionary
-        creds_json = json.loads(gcp_sa_key_str)
-        
-        # Authenticate using the dictionary
-        creds = Credentials.from_service_account_info(creds_json, scopes=SCOPES)
-        client = gspread.authorize(creds)
-        
+        print(f"Attempting to authenticate using file: {CREDENTIALS_FILE_PATH}")
+        client = gspread.service_account(filename=CREDENTIALS_FILE_PATH, scopes=SCOPES)
         print("Successfully authenticated with Google.")
         return client
-
-    except json.JSONDecodeError:
-        print("FATAL: Could not parse GCP_SA_KEY. Ensure it's valid JSON.")
+    except FileNotFoundError:
+        print(f"FATAL: Credentials file not found at {CREDENTIALS_FILE_PATH}. Check the GitHub Actions workflow.")
         sys.exit(1)
     except Exception as e:
         print(f"FATAL: An unexpected authentication error occurred: {e}")
         sys.exit(1)
 
-# ... (The rest of your script, including run_update(), remains exactly the same)
+# ... (The rest of your script remains the same)
 def get_api_data(username):
     if not username:
         return None

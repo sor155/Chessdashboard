@@ -7,15 +7,17 @@ import smtplib
 import ssl
 import os
 import json
-import sys # <-- Import sys
+import sys
 
 # --- CONFIGURATION ---
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1YG4z_MEnhpznrf0dtY8FFK_GNXYMYLrfANDigALO0C0/edit?gid=1213756490#gid=1213756490"
+CREDENTIALS_FILE_PATH = "google-credentials.json" # Define a path for the temporary credentials file
+
+# ... (The rest of the configuration section remains the same)
 ENABLE_EMAIL_NOTIFICATIONS = True
 SENDER_EMAIL = "thesor155@gmail.com"
 RECEIVER_EMAIL = "thesor155@gmail.com"
 SENDER_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
-
 manual_starting_ratings = {
     "Simon": {"C - Blitz": 412, "C - Rapid": 1006, "C - Bullet": 716},
     "Ulysse": {"C - Blitz": 1491, "C - Rapid": 1971, "C - Bullet": 1349},
@@ -23,7 +25,6 @@ manual_starting_ratings = {
     "Adrien": {"C - Rapid": 1619, "C - Bullet": 747, "C - Blitz": 1163},
     "Kevin": {"C - Bullet": 577, "C - Rapid": 702, "C - Blitz": 846}
 }
-
 friends = [
     ("Ulysse", "RealUlysse", ""),
     ("Simon", "Poulet_tao", ""),
@@ -31,14 +32,13 @@ friends = [
     ("Alex", "naatiry", ""),
     ("Kevin", "Kevor24", ""),
 ]
-
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive.file']
+
 
 def send_failure_email(error_message):
     if not ENABLE_EMAIL_NOTIFICATIONS or not SENDER_APP_PASSWORD:
         print("Email notifications disabled or password not set.")
         return
-    # ... (rest of the function is the same)
     smtp_server, port = "smtp.gmail.com", 465
     subject = "Chess Tracker Script FAILED"
     body = f"The chess rating tracker script failed to complete.\n\nError details:\n{error_message}"
@@ -53,34 +53,97 @@ def send_failure_email(error_message):
 
 
 def get_credentials():
-    """Gets credentials from environment variables."""
+    """Gets credentials by writing the env var to a temporary file."""
     try:
         gcp_sa_key_str = os.environ.get("GCP_SA_KEY")
         if not gcp_sa_key_str:
             print("ERROR: GCP_SA_KEY environment variable not found.")
-            sys.exit(1) # <-- Exit with error
+            sys.exit(1)
+
+        # Write the credentials to a temporary file
+        with open(CREDENTIALS_FILE_PATH, "w") as f:
+            f.write(gcp_sa_key_str)
         
-        creds_json = json.loads(gcp_sa_key_str)
-        creds = Credentials.from_service_account_info(creds_json, scopes=SCOPES)
-        print("Successfully authenticated with Google.")
-        return gspread.authorize(creds)
+        print("Temporarily created credentials file.")
+
+        # Authenticate using the file
+        creds = Credentials.from_service_account_file(CREDENTIALS_FILE_PATH, scopes=SCOPES)
+        client = gspread.authorize(creds)
+        
+        print("Successfully authenticated with Google using credentials file.")
+        
+        # Clean up the temporary file
+        os.remove(CREDENTIALS_FILE_PATH)
+        print("Removed temporary credentials file.")
+        
+        return client
+
     except Exception as e:
         print(f"FATAL: Authentication error: {e}")
-        sys.exit(1) # <-- Exit with error
+        # Clean up if the file was created before the error
+        if os.path.exists(CREDENTIALS_FILE_PATH):
+            os.remove(CREDENTIALS_FILE_PATH)
+        sys.exit(1)
+
+# ... (The rest of your script, including run_update(), remains exactly the same)
+def get_api_data(username):
+    if not username:
+        return None
+    url = f"https://api.chess.com/pub/player/{username}/stats"
+    try:
+        response = requests.get(url, headers={"User-Agent": "PythonChessTracker/1.0"})
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        print(f"  ERROR (Chess.com for '{username}'): {e}")
+        return None
+
+def calculate_diff(new, old):
+    if isinstance(new, int) and isinstance(old, int):
+        return f"'{new - old}"
+    return "'N/A"
+
+def safe_wld(stats):
+    try:
+        w = int(stats.get("win", 0) or 0)
+        l = int(stats.get("loss", 0) or 0)
+        d = int(stats.get("draw", 0) or 0)
+        return f"'{w}/{l}/{d}"
+    except:
+        return "'0/0/0"
+
+def safe_int(val):
+    try:
+        return int(val)
+    except:
+        return None
+
+def get_stats_from_data(data, category):
+    stats = {"rating": None, "win": 0, "loss": 0, "draw": 0}
+    category_data = data.get(f"chess_{category}", {}) if data else {}
+
+    if category_data:
+        stats["rating"] = category_data.get("last", {}).get("rating")
+        record = category_data.get("record", {}) or {}
+        stats["win"] = record.get("win", 0) or 0
+        stats["loss"] = record.get("loss", 0) or 0
+        stats["draw"] = record.get("draw", 0) or 0
+
+    return stats
+
 
 def run_update():
     """The main function to run a single update."""
     client = get_credentials()
     if not client:
         print("FATAL: Could not get Google API client.")
-        sys.exit(1) # <-- Exit with error
+        sys.exit(1)
     
     try:
         print(f"Attempting to open spreadsheet at URL: {SHEET_URL}")
         spreadsheet = client.open_by_url(SHEET_URL)
         print("Successfully opened spreadsheet.")
         
-        # ... (rest of the function is the same)
         worksheet_current = spreadsheet.worksheet('Current Ratings')
         worksheet_history = spreadsheet.worksheet('Rating History')
         history_data = worksheet_history.get_all_records()
@@ -147,7 +210,7 @@ def run_update():
     except Exception as e:
         print(f"FATAL: An error occurred during the sheet update process: {e}")
         send_failure_email(e)
-        sys.exit(1) # <-- Exit with error
+        sys.exit(1)
 
 
 if __name__ == "__main__":

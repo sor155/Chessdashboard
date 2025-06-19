@@ -5,14 +5,16 @@ from datetime import datetime
 import pandas as pd
 import smtplib
 import ssl
-import time
+import os
+import json
 
 # --- CONFIGURATION ---
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1YG4z_MEnhpznrf0dtY8FFK_GNXYMYLrfANDigALO0C0/edit?gid=1213756490#gid=1213756490"
 ENABLE_EMAIL_NOTIFICATIONS = True
 SENDER_EMAIL = "thesor155@gmail.com"
 RECEIVER_EMAIL = "thesor155@gmail.com"
-SENDER_APP_PASSWORD = "ladq thlh zrfp sjux"
+# --- Securely get the password from an environment variable ---
+SENDER_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
 
 manual_starting_ratings = {
     "Simon": {"C - Blitz": 412, "C - Rapid": 1006, "C - Bullet": 716},
@@ -33,7 +35,8 @@ friends = [
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive.file']
 
 def send_failure_email(error_message):
-    if not ENABLE_EMAIL_NOTIFICATIONS:
+    if not ENABLE_EMAIL_NOTIFICATIONS or not SENDER_APP_PASSWORD:
+        print("Email notifications disabled or password not set.")
         return
     smtp_server, port = "smtp.gmail.com", 465
     subject = "Chess Tracker Script FAILED"
@@ -48,8 +51,15 @@ def send_failure_email(error_message):
         print(f"Could not send failure email. Error: {e}")
 
 def get_credentials():
+    """Gets credentials from environment variables."""
     try:
-        creds = Credentials.from_service_account_file('credentials.json', scopes=SCOPES)
+        gcp_sa_key = os.environ.get("GCP_SA_KEY")
+        if not gcp_sa_key:
+            print("GCP_SA_KEY environment variable not set.")
+            return None
+        
+        creds_json = json.loads(gcp_sa_key)
+        creds = Credentials.from_service_account_info(creds_json, scopes=SCOPES)
         return gspread.authorize(creds)
     except Exception as e:
         print(f"Authentication error: {e}")
@@ -101,9 +111,11 @@ def get_stats_from_data(data, category):
     return stats
 
 def run_update():
+    """The main function to run a single update."""
     try:
         client = get_credentials()
         if not client:
+            send_failure_email("Could not get Google API credentials.")
             return
 
         spreadsheet = client.open_by_url(SHEET_URL)
@@ -186,13 +198,7 @@ def run_update():
         print(f"❌ Unexpected error: {e}")
         send_failure_email(e)
 
-def main():
-    while True:
-        print(f"\n--- Running update at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---")
-        run_update()
-        sleep_duration_seconds = 6 * 60 * 60
-        print(f"\n--- Update complete. Waiting for {sleep_duration_seconds / 3600} hours... ---")
-        time.sleep(sleep_duration_seconds)
-
 if __name__ == "__main__":
-    main()
+    print(f"\n--- Running update at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---")
+    run_update()
+    print(f"\n--- Update complete. ---")

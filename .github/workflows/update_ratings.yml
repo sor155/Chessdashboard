@@ -2,10 +2,8 @@ name: Update Chess Ratings
 
 on:
   schedule:
-    # Runs every 1 hour
     - cron: '0 * * * *'
   workflow_dispatch:
-    # Allows you to run this workflow manually from the Actions tab
 
 jobs:
   update-sheet:
@@ -25,7 +23,8 @@ jobs:
           pip install -r requirements.txt
 
       - name: Create Google Credentials File
-        run: echo '${{ secrets.GCP_SA_KEY }}' > google-credentials.json
+        run: |
+          echo '${{ secrets.GCP_SA_KEY }}' | base64 --decode > google-credentials.json
         shell: bash
 
       - name: Run update script

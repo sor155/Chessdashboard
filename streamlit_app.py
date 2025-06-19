@@ -252,7 +252,7 @@ def generate_move_comment(move_data):
     return ""
 
 @st.cache_data(ttl=3600, show_spinner="Analyzing game with local engine...")
-def analyze_game_with_stockfish(pgn_data, stockfish_path="/usr/games/stockfish"):
+def analyze_game_with_stockfish(pgn_data, stockfish_path="C:/Users/theso/OneDrive/Desktop/Chess test/stockfish.exe"):
     """
     Analyzes a game using a local Stockfish engine.
     """
@@ -520,9 +520,36 @@ elif tab == "Game Analysis":
         board_col, comment_col = st.columns([1, 1])
         
         with board_col:
-            # Display current board position
-            board = chess.Board(st.session_state.board_states[st.session_state.current_ply])
-            st.image(chess.svg.board(board=board, size=400), use_column_width=True) # Adjust size as needed
+            # Determine the best move for the current ply to draw an arrow
+            current_board_for_arrow = chess.Board(st.session_state.board_states[st.session_state.current_ply])
+            arrows_to_draw = []
+
+            if st.session_state.current_ply > 0:
+                # For positions after the initial one, the best move relates to the position *before* the played move.
+                # So we look at analysis_data for the *previous* ply, and that ply's 'top_engine_lines'
+                # which were calculated for the position *before* the move that brings us to the current board.
+                if analysis_data and 'top_engine_lines' in analysis_data[st.session_state.current_ply - 1] and analysis_data[st.session_state.current_ply - 1]['top_engine_lines']:
+                    best_move_uci_for_arrow = analysis_data[st.session_state.current_ply - 1]['top_engine_lines'][0]['Move']
+                    if best_move_uci_for_arrow:
+                        try:
+                            best_move_obj = chess.Move.from_uci(best_move_uci_for_arrow)
+                            arrows_to_draw.append(chess.svg.Arrow(best_move_obj.from_square, best_move_obj.to_square, color="#008000")) # Green arrow
+                        except ValueError:
+                            # Handle cases where UCI might be invalid, though unlikely with Stockfish output
+                            pass
+            elif st.session_state.current_ply == 0:
+                # For the initial position, get the best move from the analysis of the *first* actual move
+                if analysis_data and 'top_engine_lines' in analysis_data[0] and analysis_data[0]['top_engine_lines']:
+                    best_move_uci_for_arrow = analysis_data[0]['top_engine_lines'][0]['Move']
+                    if best_move_uci_for_arrow:
+                        try:
+                            best_move_obj = chess.Move.from_uci(best_move_uci_for_arrow)
+                            arrows_to_draw.append(chess.svg.Arrow(best_move_obj.from_square, best_move_obj.to_square, color="#008000")) # Green arrow
+                        except ValueError:
+                            pass
+
+
+            st.image(chess.svg.board(board=current_board_for_arrow, size=400, arrows=arrows_to_draw), use_container_width=True)
             
             # Display eval bar below the board
             # If current_ply is 0 (initial position), evaluation is typically 0.
@@ -544,8 +571,8 @@ elif tab == "Game Analysis":
         with comment_col:
             current_ply = st.session_state.current_ply
             
-            # Display player names
-            st.markdown(f"**White:** {game_info['white']} | **Black:** {game_info['black']}")
+            # Display player names and game result
+            st.markdown(f"**White:** {game_info['white']} | **Black:** {game_info['black']} | **Result:** {game_info['result']}")
             st.divider()
 
             # Display move-specific comments and details

@@ -1,5 +1,4 @@
 import gspread
-from google.oauth2.service_account import Credentials
 import requests
 from datetime import datetime
 import pandas as pd
@@ -54,6 +53,7 @@ def send_failure_email(error_message):
 
 def get_credentials():
     """Gets credentials by writing the env var to a temporary file."""
+    client = None
     try:
         gcp_sa_key_str = os.environ.get("GCP_SA_KEY")
         if not gcp_sa_key_str:
@@ -66,26 +66,23 @@ def get_credentials():
         
         print("Temporarily created credentials file.")
 
-        # Authenticate using the file
-        creds = Credentials.from_service_account_file(CREDENTIALS_FILE_PATH, scopes=SCOPES)
-        client = gspread.authorize(creds)
+        # Authenticate using the file with the recommended gspread helper
+        client = gspread.service_account(filename=CREDENTIALS_FILE_PATH, scopes=SCOPES)
         
         print("Successfully authenticated with Google using credentials file.")
         
-        # Clean up the temporary file
-        os.remove(CREDENTIALS_FILE_PATH)
-        print("Removed temporary credentials file.")
-        
-        return client
-
     except Exception as e:
         print(f"FATAL: Authentication error: {e}")
-        # Clean up if the file was created before the error
+        sys.exit(1)
+    finally:
+        # Clean up the temporary file
         if os.path.exists(CREDENTIALS_FILE_PATH):
             os.remove(CREDENTIALS_FILE_PATH)
-        sys.exit(1)
+            print("Removed temporary credentials file.")
+    
+    return client
 
-# ... (The rest of your script, including run_update(), remains exactly the same)
+# ... (The rest of your script remains the same)
 def get_api_data(username):
     if not username:
         return None

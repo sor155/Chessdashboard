@@ -1,8 +1,9 @@
 streamlit
 gspread
-google-auth-oauthlib
 pandas
 altair
 requests
 python-chess
 stockfish
+datasets
+httpx

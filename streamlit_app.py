@@ -85,8 +85,8 @@ def get_chesscom_avatar(username):
 @st.cache_data(ttl=3600)
 def fetch_current_and_history():
     try:
-        if not all(k in st.secrets.get("creds_json", {}) for k in ["type", "project_id", "private_key"]):
-            st.error("Your secrets.toml file is missing or incomplete. Please check the format.")
+        if "creds_json" not in st.secrets:
+            st.error("Your secrets are missing or incomplete. Please check your Streamlit Cloud settings.")
             return [], []
         
         creds = Credentials.from_service_account_info(st.secrets["creds_json"], scopes=SCOPES)
@@ -245,16 +245,14 @@ def generate_move_comment(move_data):
     return ""
 
 @st.cache_data(ttl=3600, show_spinner="Analyzing game with local engine...")
-def analyze_game_with_stockfish(pgn_data, stockfish_path="stockfish"):
+def analyze_game_with_stockfish(pgn_data, stockfish_path="/usr/games/stockfish"):
     """
     Analyzes a game using a local Stockfish engine.
-    You must have Stockfish installed and in your system's PATH,
-    or provide the full path to the executable.
     """
     try:
         stockfish = Stockfish(path=stockfish_path)
     except Exception as e:
-        st.error(f"Could not initialize Stockfish. Make sure it's installed and in your PATH, or provide the correct path. Error: {e}")
+        st.error(f"Could not initialize Stockfish from path: {stockfish_path}. Error: {e}")
         return None, None, None
 
     try:

@@ -335,23 +335,6 @@ def analyze_game_with_stockfish(pgn_data, stockfish_path="/usr/games/stockfish")
         st.error(f"🔥 Unexpected error during local analysis:\n```\n{traceback.format_exc()}\n```")
         return None, None, None
 
-# --- Test PGN Data ---
-TEST_PGN = """[Event "Live Chess"]
-[Site "Chess.com"]
-[Date "2024.01.15"]
-[Round "-"]
-[White "TestPlayer1"]
-[Black "TestPlayer2"]
-[Result "1-0"]
-[ECO "C65"]
-[WhiteElo "1500"]
-[BlackElo "1480"]
-[TimeControl "600"]
-[EndTime "14:32:18 PST"]
-[Termination "TestPlayer1 won by checkmate"]
-
-1. e4 e5 2. Nf3 Nc6 3. Bb5 Nf6 4. d3 Bc5 5. O-O d6 6. c3 a6 7. Ba4 b5 8. Bb3 O-O 9. h3 h6 10. Re1 Re8 11. Nbd2 Be6 12. Bc2 d5 13. exd5 Bxd5 14. Ne4 Nxe4 15. dxe4 Be6 16. Qe2 Qf6 17. Be3 Bxe3 18. Qxe3 Rad8 19. a4 Bc4 20. b3 Be6 21. axb5 axb5 22. Qc5 Bxh3 23. Qxb5 Bg4 24. Nh2 Bd7 25. Qe2 Ne7 26. Ra7 Qb6 27. Rea1 Ng6 28. g3 Bb5 29. c4 Bc6 30. R1a6 Qc5 31. Rxc7 Re6 32. b4 Qd6 33. Raa7 Be8 34. c5 Qd2 35. Qxd2 Rxd2 36. Ba4 Bxa4 37. Rxa4 Re7 38. Rc8+ Kh7 39. b5 Rb2 40. b6 Rd7 41. Ra7 Rd1+ 42. Kg2 Rbb1 43. b7 Rg1+ 44. Kf3 Rb3+ 45. Ke2 Rgb1 46. c6 Ne7 47. Re8 Nxc6 48. Rc7 Nd4+ 49. Kd2 R1b2+ 50. Kc1 Ne2+ 51. Kd1 Nc3+ 52. Kc1 Na2+ 53. Kd1 Rxb7 54. Rxb7 Rxb7 55. Rxe5 Nc3+ 56. Kd2 Nb1+ 57. Kd3 Na3 58. f4 Rd7+ 59. Ke3 Nc4+ 60. Kf3 Nxe5+ 61. fxe5 Re7 62. Kf4 g5+ 63. Kf5 Kg7 64. ng4 Re6 65. Nf6 Ra6 66. g4 Ra1 67. Nh5+ Kf8 68. Kf6 Ra6+ 69. Kf5 Ke7 70. Nf6 Ra1 71. Ng8+ Kf8 72. Nxh6 Rf1+ 73. kxg5 Ke7 74. Nf5+ Ke6 75. Ng7+ Kxe5 76. Kh6 Kxe4 77. g5 Rh1+ 78. Nh5 Kf5 79. g6 fxg6 80. Kg7 Rxh5 81. Kf7 g5 1-0"""
-
 # --- Streamlit Layout ---
 tab = st.sidebar.radio("Navigate", ["Dashboard", "Player Stats", "Game Analysis"])
 
@@ -466,14 +449,7 @@ elif tab == "Game Analysis":
     st.title("🔍 Game Analysis")
     st.markdown("Paste the PGN of a game below to get a full computer analysis from a local engine.")
 
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        pgn_text_input = st.text_area("Paste PGN Here:", value=st.session_state.pgn_text, height=250, placeholder="[Event \"Live Chess\"]...")
-    with col2:
-        st.markdown("**Quick Test:**")
-        if st.button("Load Test PGN", help="Load a sample PGN for testing"):
-            st.session_state.pgn_text = TEST_PGN
-            st.rerun()
+    pgn_text_input = st.text_area("Paste PGN Here:", value=st.session_state.pgn_text, height=250, placeholder="[Event \"Live Chess\"]...")
 
     col1, col2 = st.columns(2)
     with col1:

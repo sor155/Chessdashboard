@@ -7,12 +7,15 @@ import requests
 from datetime import datetime, date
 from collections import Counter
 import io
+import chess
 import chess.pgn
+import chess.svg
 from datasets import load_dataset
 import asyncio
 import httpx
 import time
-import json  # MISSING IMPORT - This was causing the error
+import json
+import traceback
 
 # --- PAGE CONFIG ---
 st.set_page_config(layout="wide", page_title="Chess Dashboard")
@@ -31,6 +34,27 @@ FRIENDS = [
     ("Kevin", "kevor24"),
 ]
 HEADERS = {"User-Agent": "ChessTrackerBot/1.0"}
+
+# --- UI HELPER FUNCTIONS ---
+def create_eval_bar(evaluation):
+    """Creates an HTML evaluation bar."""
+    if evaluation is None:
+        evaluation = 0
+    
+    # Clamp evaluation for display purposes
+    clamped_eval = max(-1000, min(1000, evaluation))
+    
+    # Convert evaluation to a percentage (0-100)
+    # 50% is equal, >50% is white advantage, <50% is black advantage
+    percentage = 50 + (clamped_eval / 20)
+    
+    bar_html = f"""
+    <div style="background-color: #333; border: 1px solid #555; height: 25px; width: 100%; border-radius: 5px; overflow: hidden;">
+        <div style="background-color: white; height: 100%; width: {percentage}%;"></div>
+    </div>
+    <div style="text-align: center; color: white; font-size: 0.9em;">{evaluation/100.0:.2f}</div>
+    """
+    return bar_html
 
 # --- Load Lichess ECO dataset ---
 @st.cache_resource
@@ -60,12 +84,19 @@ def get_chesscom_avatar(username):
 @st.cache_data(ttl=3600)
 def fetch_current_and_history():
     try:
-        creds = Credentials.from_service_account_file("credentials.json", scopes=SCOPES)
+        if not all(k in st.secrets.get("creds_json", {}) for k in ["type", "project_id", "private_key"]):
+            st.error("Your secrets.toml file is missing or incomplete. Please check the format.")
+            return [], []
+        
+        creds = Credentials.from_service_account_info(st.secrets["creds_json"], scopes=SCOPES)
         client = gspread.authorize(creds)
         ss = client.open_by_url(SHEET_URL)
         curr = ss.worksheet("Current Ratings").get_all_records()
         hist = ss.worksheet("Rating History").get_all_records()
         return curr, hist
+    except gspread.exceptions.SpreadsheetNotFound:
+        st.error("Spreadsheet not found. Please check the SHEET_URL and ensure your service account has access.")
+        return [], []
     except Exception as e:
         st.error(f"Could not access Google Sheets: {e}")
         return [], []
@@ -192,64 +223,33 @@ def compute_player_stats(username):
             "top_openings_white": [], "top_openings_black": []
         }
 
-# --- STOCKFISH ANALYSIS FUNCTIONS ---
-import chess.engine
-import subprocess
-import os
+# --- GAME ANALYSIS FUNCTIONS ---
+def generate_move_comment(move_data):
+    """Generates a human-readable comment for a move."""
+    quality = move_data['move_quality']
+    best_move = move_data['best_move']
+    played_move = move_data['move']
+    eval_loss = move_data['eval_loss']
 
-def find_stockfish_path():
-    """Find Stockfish executable in known locations, prioritizing local file for Windows."""
-    possible_paths = [
-        "./stockfish.exe",          # Local Windows file
-        "./stockfish",              # Local Unix/Mac file
-        "C:\\Program Files\\Stockfish\\stockfish.exe",
-        "C:\\stockfish\\stockfish.exe",
-        "/usr/bin/stockfish",
-        "/usr/local/bin/stockfish",
-        "/opt/homebrew/bin/stockfish",
-        "stockfish",                # System PATH
-    ]
+    if quality == "Excellent":
+        return "Excellent! You found the best move." if played_move == best_move else "An excellent move! Keeps the advantage."
+    elif quality == "Good":
+        return "A good move."
+    elif quality == "Inaccuracy":
+        return f"This is an inaccuracy. The best move was {best_move}, which was slightly better."
+    elif quality == "Mistake":
+        return f"A mistake. You missed the better move, {best_move}. This move loses an advantage of {eval_loss:.2f} pawns."
+    elif quality == "Blunder":
+        return f"A major blunder! This move changes the outcome of the game. The best move was {best_move}."
+    return ""
 
-    for path in possible_paths:
-        try:
-            result = subprocess.run([path, "--help"], capture_output=True, timeout=5)
-            if result.returncode == 0:
-                return path
-        except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
-            continue
-
-    return None
-
-
-@st.cache_data(ttl=3600, show_spinner="Analyzing game with Stockfish...")
-def analyze_game_with_stockfish(pgn_data, depth=20, time_limit=1.0):
-    import traceback
-
+@st.cache_data(ttl=3600, show_spinner="Analyzing game with cloud engine...")
+def analyze_game_with_api(pgn_data, depth=18):
     try:
-        # Find Stockfish
-        stockfish_path = find_stockfish_path()
-        if not stockfish_path:
-            st.error("""
-            ❌ **Stockfish engine not found.**
-            Please place `stockfish.exe` in the same folder as this app, or install Stockfish:
-            
-            - **Windows:** https://stockfishchess.org/download
-            - **macOS:** `brew install stockfish`
-            - **Linux:** `sudo apt install stockfish`
-            """)
-            return None, None
-
-        st.info(f"✅ Using Stockfish at: `{stockfish_path}`")
-
-        # Parse the PGN
-        try:
-            game = chess.pgn.read_game(io.StringIO(pgn_data))
-            if not game:
-                st.error("❌ Invalid PGN format. Please check your PGN.")
-                return None, None
-        except Exception as e:
-            st.error(f"PGN parsing failed: {e}")
-            return None, None
+        game = chess.pgn.read_game(io.StringIO(pgn_data))
+        if not game:
+            st.error("❌ Invalid PGN format.")
+            return None, None, None
 
         game_info = {
             'white': game.headers.get('White', 'Unknown'),
@@ -261,98 +261,74 @@ def analyze_game_with_stockfish(pgn_data, depth=20, time_limit=1.0):
             'opening': game.headers.get('Opening', ''),
         }
 
-        # Start engine
-        try:
-            engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
-        except Exception as e:
-            st.error(f"❌ Could not launch Stockfish: {e}")
-            return None, None
+        board = game.board()
+        analysis_data = []
+        board_states = [board.fen()]
+        
+        moves = list(game.mainline_moves())
+        total_moves = len(moves)
+        progress_bar = st.progress(0)
+        status_text = st.empty()
 
-        with engine:
-            board = game.board()
-            moves = list(game.mainline_moves())
-            analysis_data = []
+        for i, move in enumerate(moves):
+            try:
+                turn = "White" if board.turn == chess.WHITE else "Black"
+                status_text.text(f"Analyzing move {i + 1}/{total_moves} ({turn}'s turn)...")
+                progress_bar.progress((i + 1) / total_moves)
 
-            total_moves = len(moves)
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+                fen_before = board.fen()
+                api_response_before = requests.post("https://chess-api.com/v1", json={"fen": fen_before, "depth": depth})
+                api_response_before.raise_for_status()
+                data_before = api_response_before.json()
+                eval_before = data_before.get('eval')
+                best_move_san = data_before.get('bestmove')
 
-            for i, move in enumerate(moves):
-                try:
-                    status_text.text(f"Analyzing move {i + 1}/{total_moves}: {board.san(move)}")
-                    progress_bar.progress((i + 1) / total_moves)
+                actual_move_san = board.san(move)
+                board.push(move)
+                board_states.append(board.fen())
 
-                    info = engine.analyse(board, chess.engine.Limit(depth=depth, time=time_limit))
-                    score = info.get("score")
+                fen_after = board.fen()
+                api_response_after = requests.post("https://chess-api.com/v1", json={"fen": fen_after, "depth": depth})
+                api_response_after.raise_for_status()
+                data_after = api_response_after.json()
+                eval_after = data_after.get('eval')
 
-                    if score:
-                        if score.is_mate():
-                            mate = score.white().mate()
-                            eval_cp = 10000 if mate > 0 else -10000
-                            mate_in = abs(mate)
-                        else:
-                            eval_cp = score.white().score()
-                            mate_in = None
-                    else:
-                        eval_cp = 0
-                        mate_in = None
+                if eval_before is not None and eval_after is not None:
+                    eval_loss = (eval_before - eval_after) if turn == "White" else (eval_after - eval_before)
+                else:
+                    eval_loss = 0
 
-                    best_move = info.get("pv", [None])[0]
-                    best_move_san = board.san(best_move) if best_move else ""
+                if eval_loss < 20: move_quality = "Excellent"
+                elif eval_loss < 50: move_quality = "Good"
+                elif eval_loss < 100: move_quality = "Inaccuracy"
+                elif eval_loss < 200: move_quality = "Mistake"
+                else: move_quality = "Blunder"
+                
+                move_analysis = {
+                    'ply': i + 1,
+                    'move_number': (i // 2) + 1,
+                    'color': turn,
+                    'move': actual_move_san,
+                    'best_move': best_move_san,
+                    'eval_before': eval_before,
+                    'eval_after': eval_after,
+                    'eval_loss': eval_loss / 100.0,
+                    'move_quality': move_quality,
+                }
+                move_analysis['comment'] = generate_move_comment(move_analysis)
+                analysis_data.append(move_analysis)
 
-                    actual_move_san = board.san(move)
-                    board.push(move)
+            except Exception as e:
+                st.warning(f"Analysis for move {i + 1} failed: {e}")
+                continue
 
-                    post_info = engine.analyse(board, chess.engine.Limit(depth=depth, time=time_limit))
-                    post_score = post_info.get("score")
-                    if post_score:
-                        if post_score.is_mate():
-                            post_eval_cp = 10000 if post_score.white().mate() > 0 else -10000
-                        else:
-                            post_eval_cp = post_score.white().score()
-                    else:
-                        post_eval_cp = 0
-
-                    eval_loss = abs(post_eval_cp - eval_cp) if eval_cp is not None else 0
-
-                    if eval_loss < 10:
-                        move_quality = "Excellent"; symbol = "!!"
-                    elif eval_loss < 25:
-                        move_quality = "Good"; symbol = "!"
-                    elif eval_loss < 50:
-                        move_quality = "Inaccuracy"; symbol = "?!"
-                    elif eval_loss < 100:
-                        move_quality = "Mistake"; symbol = "?"
-                    else:
-                        move_quality = "Blunder"; symbol = "??"
-
-                    analysis_data.append({
-                        'move_number': (i // 2) + 1,
-                        'color': 'White' if i % 2 == 0 else 'Black',
-                        'move': actual_move_san,
-                        'best_move': best_move_san,
-                        'eval_before': eval_cp,
-                        'eval_after': post_eval_cp,
-                        'eval_loss': eval_loss,
-                        'mate_in': mate_in,
-                        'move_quality': move_quality,
-                        'quality_symbol': symbol,
-                        'is_best_move': actual_move_san == best_move_san
-                    })
-
-                except Exception as e:
-                    st.warning(f"Move {i + 1} analysis failed: {e}")
-                    continue
-
-            progress_bar.empty()
-            status_text.empty()
-
-            return game_info, analysis_data
+        progress_bar.empty()
+        status_text.empty()
+        return game_info, analysis_data, board_states
 
     except Exception as e:
-        st.error(f"🔥 Unexpected error during Stockfish analysis:\n```\n{traceback.format_exc()}\n```")
-        return None, None
-
+        st.error(f"🔥 Unexpected error during API analysis:\n```\n{traceback.format_exc()}\n```")
+        return None, None, None
 
 # --- Test PGN Data ---
 TEST_PGN = """[Event "Live Chess"]
@@ -369,14 +345,19 @@ TEST_PGN = """[Event "Live Chess"]
 [EndTime "14:32:18 PST"]
 [Termination "TestPlayer1 won by checkmate"]
 
-1. e4 e5 2. Nf3 Nc6 3. Bb5 Nf6 4. d3 Bc5 5. Bxc6 dxc6 6. h3 Nd7 7. Nc3 f5 8. exf5 Nf6 9. g4 h6 10. Bg5 hxg5 11. Nxg5 Rh4 12. f3 Qd4 13. Qe2 Bxf5 14. gxf5 Qf2+ 15. Qxf2 Bxf2+ 16. Kxf2 Rxh3 17. Nxh3 Nxf5 18. Rg1 O-O-O 19. Rg5 Rd2+ 20. Kg3 Rxc2 21. Rxf5 Rxb2 22. Rxe5 Rxa2 23. Re8+ Kd7 24. Re7+ Kd6 25. Rxg7 Ra3 26. Rg6+ Ke7 27. Rxc6 Rxc3 28. Rxc7+ Kf6 29. Rc6+ Kg5 30. f4+ Kh5 31. Rc5+ Kg6 32. Rc6+ Kf7 33. Rc7+ Ke6 34. Re7+ Kf6 35. Re4 Rc1 36. f5 Rf1 37. Re6+ Kf7 38. Re7+ Kf8 39. Re8+ Kf7 40. Re7+ Kg8 41. Re8+ Kh7 42. f6 Rf3+ 43. Kg4 Rf4+ 44. Kg5 Rf5+ 45. Kg4 Rf4+ 46. Kh5 Rf5+ 47. Kg4 Rf4+ 48. Kh5 Rf2 49. f7 Kg7 50. Re7 Rf5+ 51. Kg4 Rf4+ 52. Kg3 Rf3+ 53. Kg2 Rf2+ 54. Kh1 Rf1+ 55. Kg2 Rf2+ 56. Kg3 Rf3+ 57. Kg4 Rf4+ 58. Kg5 Rf5+ 59. Kg4 Rf1 60. f8=Q+ Kh7 61. Qf7+ Kh8 62. Nf4 Rf3 63. Re8# 1-0"""
+1. e4 e5 2. Nf3 Nc6 3. Bb5 Nf6 4. d3 Bc5 5. O-O d6 6. c3 a6 7. Ba4 b5 8. Bb3 O-O 9. h3 h6 10. Re1 Re8 11. Nbd2 Be6 12. Bc2 d5 13. exd5 Bxd5 14. Ne4 Nxe4 15. dxe4 Be6 16. Qe2 Qf6 17. Be3 Bxe3 18. Qxe3 Rad8 19. a4 Bc4 20. b3 Be6 21. axb5 axb5 22. Qc5 Bxh3 23. Qxb5 Bg4 24. Nh2 Bd7 25. Qe2 Ne7 26. Ra7 Qb6 27. Rea1 Ng6 28. g3 Bb5 29. c4 Bc6 30. R1a6 Qc5 31. Rxc7 Re6 32. b4 Qd6 33. Raa7 Be8 34. c5 Qd2 35. Qxd2 Rxd2 36. Ba4 Bxa4 37. Rxa4 Re7 38. Rc8+ Kh7 39. b5 Rb2 40. b6 Rd7 41. Ra7 Rd1+ 42. Kg2 Rbb1 43. b7 Rg1+ 44. Kf3 Rb3+ 45. Ke2 Rgb1 46. c6 Ne7 47. Re8 Nxc6 48. Rc7 Nd4+ 49. Kd2 R1b2+ 50. Kc1 Ne2+ 51. Kd1 Nc3+ 52. Kc1 Na2+ 53. Kd1 Rxb7 54. Rxb7 Rxb7 55. Rxe5 Nc3+ 56. Kd2 Nb1+ 57. Kd3 Na3 58. f4 Rd7+ 59. Ke3 Nc4+ 60. Kf3 Nxe5+ 61. fxe5 Re7 62. Kf4 g5+ 63. Kf5 Kg7 64. Ng4 Re6 65. Nf6 Ra6 66. g4 Ra1 67. Nh5+ Kf8 68. Kf6 Ra6+ 69. Kf5 Ke7 70. Nf6 Ra1 71. Ng8+ Kf8 72. Nxh6 Rf1+ 73. Kxg5 Ke7 74. Nf5+ Ke6 75. Ng7+ Kxe5 76. Kh6 Kxe4 77. g5 Rh1+ 78. Nh5 Kf5 79. g6 fxg6 80. Kg7 Rxh5 81. Kf7 g5 1-0"""
 
 # --- Streamlit Layout ---
 tab = st.sidebar.radio("Navigate", ["Dashboard", "Player Stats", "Game Analysis"])
 
-if 'player_choice' not in st.session_state:
-    st.session_state.player_choice = FRIENDS[0][0]
+# --- Initialize Session State ---
+if 'player_choice' not in st.session_state: st.session_state.player_choice = FRIENDS[0][0]
+if 'analysis_results' not in st.session_state: st.session_state.analysis_results = None
+if 'board_states' not in st.session_state: st.session_state.board_states = None
+if 'pgn_text' not in st.session_state: st.session_state.pgn_text = ""
+if 'current_ply' not in st.session_state: st.session_state.current_ply = 0
 
+# --- Dashboard Tab ---
 if tab == "Dashboard":
     st.title("♟️ Chess Rating Dashboard")
     try:
@@ -385,11 +366,11 @@ if tab == "Dashboard":
         if current:
             st.dataframe(pd.DataFrame(current), use_container_width=True)
         else:
-            st.warning("No current ratings data available.")
+            st.warning("No current ratings data available. Check your Google Sheet and secrets file.")
         
         st.subheader("Rating Progression")
-        df_hist = pd.DataFrame(history)
-        if not df_hist.empty:
+        if history:
+            df_hist = pd.DataFrame(history)
             df_hist["Date"] = pd.to_datetime(df_hist["Date"])
             df_hist["Day"] = df_hist["Date"].dt.date
             unique_players = sorted(df_hist["Player Name"].unique().tolist())
@@ -419,6 +400,7 @@ if tab == "Dashboard":
     except Exception as e:
         st.error(f"Error loading dashboard: {e}")
 
+# --- Player Stats Tab ---
 elif tab == "Player Stats":
     st.title("📊 Player Stats")
     try:
@@ -458,168 +440,113 @@ elif tab == "Player Stats":
         
         st.subheader(f"{choice}'s Rating Progression")
         _, history = fetch_current_and_history()
-        df_hist = pd.DataFrame(history)
-        df_player_hist = df_hist[df_hist["Player Name"] == choice]
-        if not df_player_hist.empty:
-            df_player_hist["Date"] = pd.to_datetime(df_player_hist["Date"])
-            df_player_hist["Day"] = df_player_hist["Date"].dt.date
-            player_chart = alt.Chart(df_player_hist).mark_line(point=True).encode(
-                x=alt.X("Day:T"), 
-                y=alt.Y("Rating:Q"), 
-                color=alt.Color("Category:N"), 
-                tooltip=["Day:T", "Category:N", "Rating:Q"]
-            ).interactive()
-            st.altair_chart(player_chart, use_container_width=True)
+        if history:
+            df_hist = pd.DataFrame(history)
+            df_player_hist = df_hist[df_hist["Player Name"] == choice]
+            if not df_player_hist.empty:
+                df_player_hist["Date"] = pd.to_datetime(df_player_hist["Date"])
+                df_player_hist["Day"] = df_player_hist["Date"].dt.date
+                player_chart = alt.Chart(df_player_hist).mark_line(point=True).encode(
+                    x=alt.X("Day:T"), 
+                    y=alt.Y("Rating:Q"), 
+                    color=alt.Color("Category:N"), 
+                    tooltip=["Day:T", "Category:N", "Rating:Q"]
+                ).interactive()
+                st.altair_chart(player_chart, use_container_width=True)
     except Exception as e:
         st.error(f"Error loading player stats: {e}")
 
+# --- Game Analysis Tab ---
 elif tab == "Game Analysis":
     st.title("🔍 Game Analysis")
-    st.markdown("Paste the PGN of a game below to get a full computer analysis from Lichess.")
-    
+    st.markdown("Paste the PGN of a game below to get a full computer analysis from a cloud engine.")
+
     col1, col2 = st.columns([3, 1])
     with col1:
-        pgn_text = st.text_area("Paste PGN Here:", height=200, placeholder="[Event \"Live Chess\"]...")
+        pgn_text_input = st.text_area("Paste PGN Here:", value=st.session_state.pgn_text, height=250, placeholder="[Event \"Live Chess\"]...")
     with col2:
         st.markdown("**Quick Test:**")
         if st.button("Load Test PGN", help="Load a sample PGN for testing"):
-            st.session_state.test_pgn = TEST_PGN
+            st.session_state.pgn_text = TEST_PGN
             st.rerun()
-    
-    # Load test PGN if button was clicked
-    if 'test_pgn' in st.session_state:
-        pgn_text = st.session_state.test_pgn
-        del st.session_state.test_pgn
-    
-    # Analysis settings
-    with st.expander("Analysis Settings", expanded=False):
-        col1, col2 = st.columns(2)
-        with col1:
-            depth = st.slider("Analysis Depth", min_value=10, max_value=25, value=18, 
-                            help="Higher depth = more accurate but slower analysis")
-        with col2:
-            time_limit = st.slider("Time per Move (seconds)", min_value=0.5, max_value=5.0, value=1.0, step=0.5,
-                                 help="More time = more accurate but slower analysis")
-    
-    col1, col2 = st.columns([1, 1])
+
+    with st.expander("Analysis Settings"):
+        depth = st.slider("Analysis Depth", 10, 22, 18, help="Higher depth is more accurate but much slower. The free API is best at depth 18.")
+
+    col1, col2 = st.columns(2)
     with col1:
-        analyze_button = st.button("🔍 Analyze with Stockfish", type="primary")
-    with col2:
-        clear_button = st.button("🗑️ Clear PGN")
-    
-    if clear_button:
-        st.rerun()
-    
-    if analyze_button:
-        if not pgn_text.strip():
-            st.error("Please paste a valid PGN into the text area.")
-        else:
-            game_info, analysis_data = analyze_game_with_stockfish(pgn_text, depth=depth, time_limit=time_limit)
-            if game_info and analysis_data:
-                st.success("✅ Analysis complete!")
-                
-                # Game Information
-                st.subheader("📋 Game Information")
-                info_col1, info_col2 = st.columns(2)
-                with info_col1:
-                    st.markdown(f"**White:** {game_info['white']}")
-                    st.markdown(f"**Black:** {game_info['black']}")
-                    st.markdown(f"**Result:** {game_info['result']}")
-                with info_col2:
-                    st.markdown(f"**Event:** {game_info['event']}")
-                    st.markdown(f"**Date:** {game_info['date']}")
-                    if game_info['eco']:
-                        st.markdown(f"**ECO:** {game_info['eco']}")
-                
-                # Analysis Summary
-                st.subheader("📊 Analysis Summary")
-                total_moves = len(analysis_data)
-                excellent_moves = sum(1 for move in analysis_data if move['move_quality'] == 'Excellent')
-                good_moves = sum(1 for move in analysis_data if move['move_quality'] == 'Good')
-                inaccuracies = sum(1 for move in analysis_data if move['move_quality'] == 'Inaccuracy')
-                mistakes = sum(1 for move in analysis_data if move['move_quality'] == 'Mistake')
-                blunders = sum(1 for move in analysis_data if move['move_quality'] == 'Blunder')
-                
-                summary_col1, summary_col2, summary_col3, summary_col4, summary_col5 = st.columns(5)
-                with summary_col1:
-                    st.metric("Excellent Moves", excellent_moves, f"{excellent_moves/total_moves*100:.1f}%")
-                with summary_col2:
-                    st.metric("Good Moves", good_moves, f"{good_moves/total_moves*100:.1f}%")
-                with summary_col3:
-                    st.metric("Inaccuracies", inaccuracies, f"{inaccuracies/total_moves*100:.1f}%")
-                with summary_col4:
-                    st.metric("Mistakes", mistakes, f"{mistakes/total_moves*100:.1f}%")
-                with summary_col5:
-                    st.metric("Blunders", blunders, f"{blunders/total_moves*100:.1f}%")
-                
-                # Move-by-Move Analysis
-                st.subheader("🔍 Move-by-Move Analysis")
-                
-                # Filter options
-                filter_col1, filter_col2 = st.columns(2)
-                with filter_col1:
-                    show_only_mistakes = st.checkbox("Show only mistakes/blunders", value=False)
-                with filter_col2:
-                    show_best_moves = st.checkbox("Show suggested best moves", value=True)
-                
-                # Prepare data for display
-                display_data = []
-                for entry in analysis_data:
-                    if show_only_mistakes and entry['move_quality'] in ['Excellent', 'Good']:
-                        continue
-                    
-                    eval_before = f"{entry['eval_before']/100:.2f}" if entry['eval_before'] is not None else "N/A"
-                    eval_after = f"{entry['eval_after']/100:.2f}" if entry['eval_after'] is not None else "N/A"
-                    
-                    if entry['mate_in']:
-                        eval_display = f"Mate in {entry['mate_in']}"
-                    else:
-                        eval_display = eval_before
-                    
-                    move_display = f"{entry['move']} {entry['quality_symbol']}"
-                    if show_best_moves and not entry['is_best_move'] and entry['best_move']:
-                        move_display += f" (Best: {entry['best_move']})"
-                    
-                    display_row = {
-                        "Move": f"{entry['move_number']}. {entry['color']}",
-                        "Played": move_display,
-                        "Evaluation": eval_display,
-                        "Eval Change": f"{entry['eval_loss']/100:.2f}" if entry['eval_loss'] else "0.00",
-                        "Quality": f"{entry['move_quality']} {entry['quality_symbol']}"
-                    }
-                    display_data.append(display_row)
-                
-                if display_data:
-                    df_analysis = pd.DataFrame(display_data)
-                    
-                    # Color code the dataframe based on move quality
-                    def highlight_moves(row):
-                        quality = row['Quality']
-                        if 'Blunder' in quality:
-                            return ['background-color: #ffebee'] * len(row)
-                        elif 'Mistake' in quality:
-                            return ['background-color: #fff3e0'] * len(row)
-                        elif 'Inaccuracy' in quality:
-                            return ['background-color: #fffde7'] * len(row)
-                        elif 'Excellent' in quality:
-                            return ['background-color: #e8f5e8'] * len(row)
-                        else:
-                            return [''] * len(row)
-                    
-                    styled_df = df_analysis.style.apply(highlight_moves, axis=1)
-                    st.dataframe(styled_df, use_container_width=True)
-                    
-                    # Download analysis as CSV
-                    csv = df_analysis.to_csv(index=False)
-                    st.download_button(
-                        label="📥 Download Analysis as CSV",
-                        data=csv,
-                        file_name=f"chess_analysis_{game_info['white']}_vs_{game_info['black']}.csv",
-                        mime="text/csv"
-                    )
-                    
+        if st.button("🔍 Analyze Game", type="primary"):
+            if not pgn_text_input.strip():
+                st.error("Please paste a PGN to analyze.")
+            else:
+                st.session_state.pgn_text = pgn_text_input
+                st.session_state.current_ply = 0
+                game_info, analysis, boards = analyze_game_with_api(pgn_text_input, depth)
+                if game_info and analysis and boards:
+                    st.session_state.analysis_results = (game_info, analysis)
+                    st.session_state.board_states = boards
                     st.balloons()
                 else:
-                    st.info("No moves match the current filter criteria.")
+                    st.error("Could not analyze game. Check PGN or API status.")
+    with col2:
+        if st.button("🗑️ Clear Analysis"):
+            st.session_state.analysis_results = None
+            st.session_state.board_states = None
+            st.session_state.pgn_text = ""
+            st.session_state.current_ply = 0
+            st.rerun()
+    
+    if st.session_state.analysis_results:
+        game_info, analysis_data = st.session_state.analysis_results
+        
+        st.header("📋 Game Review")
+        
+        board_col, comment_col = st.columns([1, 1])
+        
+        with board_col:
+            board = chess.Board(st.session_state.board_states[st.session_state.current_ply])
+            st.image(chess.svg.board(board=board, size=400))
+            
+            # Display eval bar
+            current_eval = analysis_data[st.session_state.current_ply -1]['eval_after'] if st.session_state.current_ply > 0 else 0
+            st.markdown(create_eval_bar(current_eval), unsafe_allow_html=True)
+            
+            nav_cols = st.columns(2)
+            if nav_cols[0].button("⬅️ Previous", use_container_width=True):
+                if st.session_state.current_ply > 0:
+                    st.session_state.current_ply -= 1
+                    st.rerun()
+            if nav_cols[1].button("Next ➡️", use_container_width=True):
+                if st.session_state.current_ply < len(st.session_state.board_states) - 1:
+                    st.session_state.current_ply += 1
+                    st.rerun()
+
+        with comment_col:
+            current_ply = st.session_state.current_ply
+            
+            # Display player names
+            st.markdown(f"**White:** {game_info['white']} | **Black:** {game_info['black']}")
+            st.divider()
+
+            if current_ply > 0:
+                move_data = analysis_data[current_ply - 1]
+                st.subheader(f"Move {move_data['move_number']}: {move_data['color']}")
+                st.markdown(f"#### You played **{move_data['move']}**")
+                
+                quality = move_data['move_quality']
+                if quality == "Excellent": st.success(f"**{quality}!** {move_data['comment']}")
+                elif quality == "Good": st.info(f"**{quality}.** {move_data['comment']}")
+                elif quality == "Inaccuracy": st.warning(f"**{quality}.** {move_data['comment']}")
+                else: st.error(f"**{quality}!** {move_data['comment']}")
             else:
-                st.error("Could not analyze the game. Please check your PGN format and ensure Stockfish is installed.")
+                st.subheader("Starting Position")
+                st.info("Use the buttons to navigate through the game review.")
+        
+        st.divider()
+
+        st.header("🔍 Move List")
+        df_display = pd.DataFrame(analysis_data)
+        st.dataframe(df_display[['move_number', 'color', 'move', 'eval_after', 'move_quality', 'comment']], use_container_width=True)
+
+        csv = df_display.to_csv(index=False)
+        st.download_button("📥 Download Full Analysis (CSV)", csv, f"analysis_{game_info['white']}_vs_{game_info['black']}.csv")

@@ -12,6 +12,13 @@ on:
 jobs:
   update-database:
     runs-on: ubuntu-latest
+    
+    # --- THIS IS THE FIX ---
+    # This block grants the action the necessary permissions to write
+    # back to your repository.
+    permissions:
+      contents: write
+
     steps:
       - name: Check out repository
         # This step checks out your repository's code, so the action can access it.
@@ -24,7 +31,7 @@ jobs:
           python-version: '3.11' 
 
       - name: Install System Dependencies (Stockfish)
-        # This is the new step. It installs the actual Stockfish engine
+        # This step installs the actual Stockfish engine
         # onto the Linux machine running the action.
         run: |
           sudo apt-get update

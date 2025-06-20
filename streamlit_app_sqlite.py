@@ -285,17 +285,23 @@ elif tab == "Game Analysis":
         else: st.error("Please paste a PGN to analyze.")
     if c2.button("Clear Analysis", use_container_width=True):
         st.session_state.analysis_results, st.session_state.board_states, st.session_state.pgn_text, st.session_state.current_ply = None, None, "", 0; st.rerun()
+    
     if st.session_state.analysis_results:
         info, analysis = st.session_state.analysis_results
-        board_col, comment_col = st.columns([1, 1.2])
+        
+        # --- RESPONSIVE LAYOUT FOR ANALYSIS ---
+        # On wide screens, use columns. On mobile, Streamlit stacks them automatically.
+        board_col, comment_col = st.columns([1, 1.3])
+        
         with board_col:
             current_board = chess.Board(st.session_state.board_states[st.session_state.current_ply])
+            
             # Draw an arrow for the best move
             arrow = []
             if st.session_state.current_ply < len(analysis):
                 best_move_uci = analysis[st.session_state.current_ply].get('top_moves', [])[0]['Move']
                 move = chess.Move.from_uci(best_move_uci)
-                arrow.append(chess.svg.Arrow(move.from_square, move.to_square, color="green"))
+                arrow.append(chess.svg.Arrow(move.from_square, move.to_square, color="#6C9E3F")) # Green arrow
             
             st.image(chess.svg.board(board=current_board, arrows=arrow, size=400), use_container_width=True)
             
@@ -304,6 +310,7 @@ elif tab == "Game Analysis":
             nav1, nav2 = st.columns(2)
             if nav1.button("⬅️ Previous", use_container_width=True, disabled=(st.session_state.current_ply == 0)): st.session_state.current_ply -= 1; st.rerun()
             if nav2.button("Next ➡️", use_container_width=True, disabled=(st.session_state.current_ply >= len(st.session_state.board_states) - 1)): st.session_state.current_ply += 1; st.rerun()
+            
         with comment_col:
             st.markdown(f"**White:** {info.get('White', 'N/A')} | **Black:** {info.get('Black', 'N/A')} | **Result:** {info.get('Result', '*')}")
             st.divider()
@@ -322,7 +329,6 @@ elif tab == "Game Analysis":
                 st.markdown("---")
                 st.subheader("Engine's Top Choices")
                 
-                # Use the board state *before* the move was made to get correct SAN for engine lines
                 board_before_move = chess.Board(st.session_state.board_states[st.session_state.current_ply - 1])
                 top_moves = analysis[st.session_state.current_ply - 1].get('top_moves', [])
                 for i, top_move in enumerate(top_moves):
@@ -334,8 +340,9 @@ elif tab == "Game Analysis":
             else:
                 st.subheader("Starting Position")
                 st.info("Use the navigation buttons to step through the game.")
-        st.divider()
-        st.header("🔍 Full Move List Analysis")
-        df_display = pd.DataFrame(analysis)
-        st.dataframe(df_display[['move_number', 'color', 'move', 'best_move', 'eval_loss', 'move_quality']], use_container_width=True, hide_index=True)
-        st.download_button("📥 Download Analysis (CSV)", df_display.to_csv(index=False), f"analysis_{info.get('White','N_A')}_vs_{info.get('Black','N_A')}.csv", "text/csv")
+        
+        # --- Use an expander for the full move list to save space ---
+        with st.expander("Show Full Move List Analysis"):
+            df_display = pd.DataFrame(analysis)
+            st.dataframe(df_display[['move_number', 'color', 'move', 'best_move', 'eval_loss', 'move_quality']], use_container_width=True, hide_index=True)
+            st.download_button("📥 Download Analysis (CSV)", df_display.to_csv(index=False), f"analysis_{info.get('White','N_A')}_vs_{info.get('Black','N_A')}.csv", "text/csv")

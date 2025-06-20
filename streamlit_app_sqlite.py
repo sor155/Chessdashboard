@@ -171,28 +171,21 @@ def analyze_game_with_stockfish(pgn_data):
         progress_bar, status_text = st.progress(0), st.empty()
         
         for i, move in enumerate(moves):
-    turn = "White" if board.turn == chess.WHITE else "Black"
-    status_text.text(f"Analyzing move {i + 1}/{len(moves)} ({turn}'s turn)...")
-    
-    move_san = board.san(move)
-    
-    stockfish.set_fen_position(board.fen())
-    
-    # Get top moves and evaluation in a single call
-    top_moves = stockfish.get_top_moves(3)
-    
-    if top_moves:
-        best_move_san = board.san(chess.Move.from_uci(top_moves[0]['Move']))
-        eval_before = top_moves[0]['Centipawn'] if 'Centipawn' in top_moves[0] else None
-    else:
-        best_move_san = "N/A"
-        eval_before = None
-
-    board.push(move)
-    states.append(board.fen())
-    
-    stockfish.set_fen_position(board.fen())
-    eval_after = stockfish.get_evaluation().get('value')
+            turn = "White" if board.turn == chess.WHITE else "Black"
+            status_text.text(f"Analyzing move {i + 1}/{len(moves)} ({turn}'s turn)...")
+            
+            move_san = board.san(move)
+            
+            stockfish.set_fen_position(board.fen())
+            eval_before = stockfish.get_evaluation().get('value')
+            top_moves = stockfish.get_top_moves(3) # Get top 3 moves
+            best_move_san = board.san(chess.Move.from_uci(top_moves[0]['Move'])) if top_moves else "N/A"
+            
+            board.push(move)
+            states.append(board.fen())
+            
+            stockfish.set_fen_position(board.fen())
+            eval_after = stockfish.get_evaluation().get('value')
             
             eval_loss = 0
             if isinstance(eval_before, int) and isinstance(eval_after, int):

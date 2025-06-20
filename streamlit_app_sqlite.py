@@ -23,7 +23,7 @@ FRIENDS = [
     ("Ulysse", "realulysse"), ("Simon", "poulet_tao"), ("Adrien", "adrienbourque"),
     ("Alex", "naatiry"), ("Kevin", "kevor24"),
 ]
-HEADERS = {"User-Agent": "ChessDashboard/Final-v10.0"}
+HEADERS = {"User-Agent": "ChessDashboard/Final-v11.0"}
 
 # --- STOCKFISH PATH CONFIGURATION ---
 def get_stockfish_path():
@@ -155,8 +155,6 @@ def analyze_game_with_stockfish(pgn_data):
             turn = "White" if board.turn == chess.WHITE else "Black"
             status_text.text(f"Analyzing move {i + 1}/{len(moves)} ({turn}'s turn)...")
             
-            # --- THE FIX IS HERE ---
-            # Generate the SAN for the move BEFORE making it on the board.
             move_san = board.san(move)
             
             stockfish.set_fen_position(board.fen())
@@ -164,7 +162,6 @@ def analyze_game_with_stockfish(pgn_data):
             best_move_uci = stockfish.get_best_move()
             best_move_san = board.san(chess.Move.from_uci(best_move_uci)) if best_move_uci else "N/A"
             
-            # Now, push the move to advance the board state.
             board.push(move)
             states.append(board.fen())
             
@@ -179,9 +176,11 @@ def analyze_game_with_stockfish(pgn_data):
             
             move_data = {
                 'ply': i + 1, 'move_number': (i // 2) + 1, 'color': turn, 
-                'move': move_san, # Use the pre-calculated SAN
-                'best_move': best_move_san, 'eval_loss': eval_loss / 100.0, 'move_quality': quality
+                'move': move_san, 'best_move': best_move_san, 
+                'eval_before': eval_before, 'eval_after': eval_after,
+                'eval_loss': eval_loss / 100.0, 'move_quality': quality
             }
+
             move_data['comment'] = f"Best was {best_move_san}." if quality not in ["Excellent", "Good"] else f"{quality} move."
             analysis.append(move_data)
             progress_bar.progress((i + 1) / len(moves))

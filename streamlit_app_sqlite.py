@@ -24,9 +24,11 @@ FRIENDS = [
     ("Alex", "naatiry"), ("Kevin", "kevor24"),
 ]
 HEADERS = {"User-Agent": "ChessDashboard/Final-v8.0"}
-# --- IMPORTANT: UPDATE THIS PATH ---
-# This MUST point to your local Stockfish executable file.
-STOCKFISH_PATH = "C:/Users/theso/OneDrive/Desktop/Chess test/stockfish.exe"
+
+# --- IMPORTANT: PATH CORRECTION ---
+# This now uses the system-installed stockfish package.
+# This requires a packages.txt file for Streamlit Cloud deployment.
+STOCKFISH_PATH = "stockfish"
 
 # --- SESSION STATE INITIALIZATION ---
 if 'analysis_results' not in st.session_state: st.session_state.analysis_results = None
@@ -37,7 +39,7 @@ if 'current_ply' not in st.session_state: st.session_state.current_ply = 0
 # --- DATA LOADING ---
 @st.cache_resource
 def load_opening_maps():
-    """Loads and caches the Lichess opening dataset into multiple maps for robust lookups."""
+    """Loads and caches the Lichess opening dataset."""
     try:
         ds = load_dataset("Lichess/chess-openings", split="train")
         eco_map = {row["eco"]: row["name"] for row in ds}
@@ -57,7 +59,7 @@ def fetch_from_db(table_name):
         st.error(f"Database error: The table '{table_name}' was not found. Please run `database_setup.py` and `update_tracker_sqlite.py`.")
         return pd.DataFrame()
 
-# --- CORE LOGIC (THE DEFINITIVE FIX) ---
+# --- CORE LOGIC ---
 def get_opening_name(game_data):
     """Determines the opening name using a multi-step, robust method."""
     if not eco_map or not pgn_map: return "Unknown (Dataset unavailable)"
@@ -135,13 +137,12 @@ def get_live_player_analysis(username):
 
 @st.cache_data(ttl=3600, show_spinner="Analyzing game with local engine...")
 def analyze_game_with_stockfish(pgn_data):
-    if not os.path.exists(STOCKFISH_PATH):
-        st.error(f"Stockfish engine not found at: {STOCKFISH_PATH}. Please download it and update the STOCKFISH_PATH variable in the script.")
-        return None, None, None
+    # This now uses the STOCKFISH_PATH variable defined at the top of the script
     try:
         stockfish = Stockfish(path=STOCKFISH_PATH, parameters={"Threads": 2, "Hash": 256})
     except Exception as e:
-        st.error(f"Could not initialize Stockfish: {e}"); return None, None, None
+        st.error(f"Could not initialize Stockfish from path '{STOCKFISH_PATH}'. Please ensure it is installed and the path is correct. Error: {e}")
+        return None, None, None
     try:
         game = chess.pgn.read_game(io.StringIO(pgn_data))
         if not game: st.error("Invalid PGN data."); return None, None, None

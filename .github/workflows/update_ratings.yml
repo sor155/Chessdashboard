@@ -1,33 +1,53 @@
-name: Update Chess Ratings
+# .github/workflows/update_database.yml
+name: Update Chess Ratings Database
 
 on:
   schedule:
+    # This runs the action every hour. You can change the schedule.
+    # '0 * * * *' means at minute 0 of every hour.
     - cron: '0 * * * *'
   workflow_dispatch:
+    # This allows you to manually trigger the action from the GitHub UI.
 
 jobs:
-  update-sheet:
+  update-database:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v3
+        # This step checks out your repository's code, so the action can access it.
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        # This step installs a version of Python on the runner.
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.11' 
 
-      - name: Install dependencies
+      - name: Install System Dependencies (Stockfish)
+        # This is the new step. It installs the actual Stockfish engine
+        # onto the Linux machine running the action.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y stockfish
+
+      - name: Install Python Dependencies
+        # This step reads your requirements.txt file and installs the necessary libraries.
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Create Google Credentials File
+      - name: Run update script to modify the database
+        # This is the key step where your Python script runs and updates the .db file.
+        run: python update_tracker_sqlite.py
+      
+      - name: Commit and push if database changed
+        # This step checks if the chess_ratings.db file was modified.
+        # If it was, it commits the file and pushes it back to your repository.
         run: |
-          echo '${{ secrets.GCP_SA_KEY }}' | base64 --decode > google-credentials.json
-        shell: bash
-
-      - name: Run update script
-        env:
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-        run: python update_sheets_tracker.py
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add chess_ratings.db
+          # The 'git commit' command will fail if there are no changes,
+          # so we use '|| exit 0' to prevent the workflow from failing.
+          git commit -m "Automated database update" || exit 0
+          git push

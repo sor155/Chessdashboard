@@ -160,7 +160,7 @@ def analyze_game_with_stockfish(pgn_data):
         st.error("Stockfish engine not found. Please ensure it is installed and the path is configured correctly in the script.")
         return None, None, None
     try:
-        stockfish = Stockfish(path=STOCKFISH_PATH, parameters={"Threads": 2, "Hash": 256})
+        stockfish = Stockfish(path=STOCKFISH_PATH, parameters={"Threads": 4, "Hash": 1024})
     except Exception as e:
         st.error(f"Could not initialize Stockfish from path '{STOCKFISH_PATH}'. Error: {e}"); return None, None, None
     try:

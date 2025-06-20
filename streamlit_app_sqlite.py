@@ -301,7 +301,7 @@ elif tab == "Game Analysis":
             if st.session_state.current_ply < len(analysis):
                 best_move_uci = analysis[st.session_state.current_ply].get('top_moves', [])[0]['Move']
                 move = chess.Move.from_uci(best_move_uci)
-                arrow.append(chess.svg.Arrow(move.from_square, move.to_square, color="#6C9E3F")) # Green arrow
+                arrow.append(chess.svg.Arrow(move.from_square, move.to_square, color="#6B17CC")) # Green arrow
             
             st.image(chess.svg.board(board=current_board, arrows=arrow, size=400), use_container_width=True)
             

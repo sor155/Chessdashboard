@@ -6,8 +6,8 @@ import sys
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
 # Define the paths to the two main scripts
-updater_script = os.path.join(script_dir, 'update_sheets_tracker.py')
-streamlit_app_script = os.path.join(script_dir, 'streamlit_app.py')
+updater_script = os.path.join(script_dir, 'update_tracker_sqlite.py') # <-- Change this line
+streamlit_app_script = os.path.join(script_dir, 'streamlit_app_sqlite.py') # <-- Change this line
 
 # Define the commands to run
 # We use sys.executable to ensure we're using the same Python that ran this launcher

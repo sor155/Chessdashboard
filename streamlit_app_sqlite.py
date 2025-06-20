@@ -23,16 +23,12 @@ FRIENDS = [
     ("Ulysse", "realulysse"), ("Simon", "poulet_tao"), ("Adrien", "adrienbourque"),
     ("Alex", "naatiry"), ("Kevin", "kevor24"),
 ]
-HEADERS = {"User-Agent": "ChessDashboard/Final-v9.0"}
+HEADERS = {"User-Agent": "ChessDashboard/Final-v10.0"}
 
-# --- STOCKFISH PATH CONFIGURATION (THE FIX) ---
-# This function makes the app work both locally (Windows) and deployed (Linux).
+# --- STOCKFISH PATH CONFIGURATION ---
 def get_stockfish_path():
-    """
-    Determines the correct path for the Stockfish executable.
-    Prioritizes the standard Linux path for deployed environments.
-    """
-    # Path for deployed Streamlit Cloud environment
+    """Determines the correct path for the Stockfish executable."""
+    # Path for deployed Streamlit Cloud environment via packages.txt
     linux_path = "/usr/games/stockfish"
     if os.path.exists(linux_path):
         return linux_path
@@ -85,16 +81,14 @@ def fetch_from_db(table_name):
 def get_opening_name(game_data):
     """Determines the opening name using a multi-step, robust method."""
     if not eco_map or not pgn_map: return "Unknown (Dataset unavailable)"
-
     pgn_text = game_data.get("pgn")
     if not pgn_text: return "Unknown"
-    
     try:
         pgn_headers = chess.pgn.read_headers(io.StringIO(pgn_text))
         if not pgn_headers: return "Unknown"
-        eco = pgn_headers.get("ECO")
+        eco = pgn_headers.get("ECO");
         if eco and eco in eco_map: return eco_map[eco]
-        opening = pgn_headers.get("Opening")
+        opening = pgn_headers.get("Opening");
         if opening: return opening
         game = chess.pgn.read_game(io.StringIO(pgn_text))
         if not game: return "Unknown"
@@ -112,7 +106,8 @@ def get_live_player_analysis(username):
     """Fetches and computes detailed player stats by analyzing recent game archives."""
     async def fetch_and_compute():
         async with httpx.AsyncClient() as client:
-            profile_task, archives_task = client.get(f"https://api.chess.com/pub/player/{username}", headers=HEADERS), client.get(f"https://api.chess.com/pub/player/{username}/games/archives", headers=HEADERS)
+            profile_task = client.get(f"https://api.chess.com/pub/player/{username}", headers=HEADERS)
+            archives_task = client.get(f"https://api.chess.com/pub/player/{username}/games/archives", headers=HEADERS)
             profile_res, archives_res = await asyncio.gather(profile_task, archives_task)
             if profile_res.is_error or archives_res.is_error: return {"error": "API request failed."}, None
             avatar_url, archive_urls = profile_res.json().get("avatar"), archives_res.json().get("archives", [])[-4:]
@@ -141,6 +136,7 @@ def get_live_player_analysis(username):
 
 @st.cache_data(ttl=3600, show_spinner="Analyzing game with local engine...")
 def analyze_game_with_stockfish(pgn_data):
+    """Analyzes a game PGN using a local Stockfish engine."""
     if not STOCKFISH_PATH:
         st.error("Stockfish engine not found. Please ensure it is installed and the path is configured correctly in the script.")
         return None, None, None
@@ -154,28 +150,47 @@ def analyze_game_with_stockfish(pgn_data):
         game_info, board, analysis, states = dict(game.headers), game.board(), [], [game.board().fen()]
         moves = list(game.mainline_moves())
         progress_bar, status_text = st.progress(0), st.empty()
+        
         for i, move in enumerate(moves):
             turn = "White" if board.turn == chess.WHITE else "Black"
             status_text.text(f"Analyzing move {i + 1}/{len(moves)} ({turn}'s turn)...")
+            
+            # --- THE FIX IS HERE ---
+            # Generate the SAN for the move BEFORE making it on the board.
+            move_san = board.san(move)
+            
             stockfish.set_fen_position(board.fen())
-            eval_before, best_move_uci = stockfish.get_evaluation().get('value'), stockfish.get_best_move()
+            eval_before = stockfish.get_evaluation().get('value')
+            best_move_uci = stockfish.get_best_move()
             best_move_san = board.san(chess.Move.from_uci(best_move_uci)) if best_move_uci else "N/A"
-            board.push(move); states.append(board.fen())
+            
+            # Now, push the move to advance the board state.
+            board.push(move)
+            states.append(board.fen())
+            
             stockfish.set_fen_position(board.fen())
             eval_after = stockfish.get_evaluation().get('value')
-            eval_loss = (eval_before - eval_after) if turn=="White" else (eval_after - eval_before) if isinstance(eval_before, int) and isinstance(eval_after, int) else 0
+            
+            eval_loss = 0
+            if isinstance(eval_before, int) and isinstance(eval_after, int):
+                eval_loss = (eval_before - eval_after) if turn=="White" else (eval_after - eval_before)
+                
             quality = "Excellent" if eval_loss < 20 else "Good" if eval_loss < 50 else "Inaccuracy" if eval_loss < 100 else "Mistake" if eval_loss < 200 else "Blunder"
-            move_data = {'ply':i+1,'move_number':(i//2)+1,'color':turn,'move':board.san(move),'best_move':best_move_san,'eval_loss':eval_loss/100.0,'move_quality':quality}
+            
+            move_data = {
+                'ply': i + 1, 'move_number': (i // 2) + 1, 'color': turn, 
+                'move': move_san, # Use the pre-calculated SAN
+                'best_move': best_move_san, 'eval_loss': eval_loss / 100.0, 'move_quality': quality
+            }
             move_data['comment'] = f"Best was {best_move_san}." if quality not in ["Excellent", "Good"] else f"{quality} move."
             analysis.append(move_data)
             progress_bar.progress((i + 1) / len(moves))
+            
         progress_bar.empty(); status_text.empty()
         return game_info, analysis, states
     except Exception as e:
         st.error(f"🔥 Error during analysis: {e}\n{traceback.format_exc()}"); return None, None, None
 
-# --- All UI code is below ---
-# ...
 def create_eval_bar(evaluation):
     if evaluation is None: evaluation = 0
     clamped_eval = max(-1000, min(1000, evaluation))
@@ -183,6 +198,7 @@ def create_eval_bar(evaluation):
     eval_in_pawns = evaluation / 100.0
     return f"""<div style="position:relative;background-color:#333;border:1px solid #555;height:25px;width:100%;border-radius:5px;overflow:hidden;"><div style="background-color:white;height:100%;width:{percentage}%;"></div><div style="position:absolute;top:0;left:0;width:100%;height:100%;text-align:center;color:{'black' if 40<percentage<60 else 'white'};line-height:25px;font-size:0.9em;">Eval: {eval_in_pawns:.2f}</div></div>"""
 
+# --- UI LAYOUT ---
 tab = st.sidebar.radio("Navigate", ["Dashboard", "Player Stats", "Game Analysis"])
 
 if tab == "Dashboard":

@@ -23,7 +23,7 @@ FRIENDS = [
     ("Ulysse", "realulysse"), ("Simon", "poulet_tao"), ("Adrien", "adrienbourque"),
     ("Alex", "naatiry"), ("Kevin", "kevor24"),
 ]
-HEADERS = {"User-Agent": "ChessDashboard/Final-v11.0"}
+HEADERS = {"User-Agent": "ChessDashboard/Final-v12.0"}
 
 # --- STOCKFISH PATH CONFIGURATION ---
 def get_stockfish_path():
@@ -134,6 +134,25 @@ def get_live_player_analysis(username):
             return {"winrate_white":f"{100*stats['wins_white']/stats['total_white']:.1f}%" if stats['total_white']>0 else "N/A", "winrate_black":f"{100*stats['wins_black']/stats['total_black']:.1f}%" if stats['total_black']>0 else "N/A", "avg_accuracy_white":f"{sum(stats['white_accuracies'])/len(stats['white_accuracies']):.1f}%" if stats['white_accuracies'] else "N/A", "avg_accuracy_black":f"{sum(stats['black_accuracies'])/len(stats['black_accuracies']):.1f}%" if stats['black_accuracies'] else "N/A", "top_openings_white":stats["white_openings"].most_common(5), "top_openings_black":stats["black_openings"].most_common(5)}, avatar_url
     return asyncio.run(fetch_and_compute())
 
+def generate_move_comment(move_data):
+    """Generates a more detailed, human-readable comment for a move's quality."""
+    quality = move_data['move_quality']
+    best_move = move_data['best_move']
+    played_move = move_data['move']
+    eval_loss = move_data['eval_loss']
+
+    if quality == "Excellent":
+        return "Excellent! You found the best move." if played_move == best_move else "An excellent move! Keeps the advantage."
+    elif quality == "Good":
+        return "A good solid move."
+    elif quality == "Inaccuracy":
+        return f"An inaccuracy. The best move was {best_move}, which was slightly better."
+    elif quality == "Mistake":
+        return f"A mistake. You missed the better move, {best_move}. This move loses an advantage of {eval_loss:.2f} pawns."
+    elif quality == "Blunder":
+        return f"A major blunder! This move significantly worsens your position. The best move was {best_move}."
+    return ""
+
 @st.cache_data(ttl=3600, show_spinner="Analyzing game with local engine...")
 def analyze_game_with_stockfish(pgn_data):
     """Analyzes a game PGN using a local Stockfish engine."""
@@ -159,8 +178,8 @@ def analyze_game_with_stockfish(pgn_data):
             
             stockfish.set_fen_position(board.fen())
             eval_before = stockfish.get_evaluation().get('value')
-            best_move_uci = stockfish.get_best_move()
-            best_move_san = board.san(chess.Move.from_uci(best_move_uci)) if best_move_uci else "N/A"
+            top_moves = stockfish.get_top_moves(3) # Get top 3 moves
+            best_move_san = board.san(chess.Move.from_uci(top_moves[0]['Move'])) if top_moves else "N/A"
             
             board.push(move)
             states.append(board.fen())
@@ -176,12 +195,11 @@ def analyze_game_with_stockfish(pgn_data):
             
             move_data = {
                 'ply': i + 1, 'move_number': (i // 2) + 1, 'color': turn, 
-                'move': move_san, 'best_move': best_move_san, 
-                'eval_before': eval_before, 'eval_after': eval_after,
-                'eval_loss': eval_loss / 100.0, 'move_quality': quality
+                'move': move_san, 'best_move': best_move_san, 'eval_before': eval_before,
+                'eval_after': eval_after, 'eval_loss': eval_loss / 100.0,
+                'move_quality': quality, 'top_moves': top_moves
             }
-
-            move_data['comment'] = f"Best was {best_move_san}." if quality not in ["Excellent", "Good"] else f"{quality} move."
+            move_data['comment'] = generate_move_comment(move_data)
             analysis.append(move_data)
             progress_bar.progress((i + 1) / len(moves))
             
@@ -271,8 +289,16 @@ elif tab == "Game Analysis":
         info, analysis = st.session_state.analysis_results
         board_col, comment_col = st.columns([1, 1.2])
         with board_col:
-            board = chess.Board(st.session_state.board_states[st.session_state.current_ply])
-            st.image(chess.svg.board(board=board, size=400), use_container_width=True)
+            current_board = chess.Board(st.session_state.board_states[st.session_state.current_ply])
+            # Draw an arrow for the best move
+            arrow = []
+            if st.session_state.current_ply < len(analysis):
+                best_move_uci = analysis[st.session_state.current_ply].get('top_moves', [])[0]['Move']
+                move = chess.Move.from_uci(best_move_uci)
+                arrow.append(chess.svg.Arrow(move.from_square, move.to_square, color="green"))
+            
+            st.image(chess.svg.board(board=current_board, arrows=arrow, size=400), use_container_width=True)
+            
             current_eval = analysis[st.session_state.current_ply - 1]['eval_after'] if st.session_state.current_ply > 0 else 20
             st.markdown(create_eval_bar(current_eval), unsafe_allow_html=True)
             nav1, nav2 = st.columns(2)
@@ -281,6 +307,7 @@ elif tab == "Game Analysis":
         with comment_col:
             st.markdown(f"**White:** {info.get('White', 'N/A')} | **Black:** {info.get('Black', 'N/A')} | **Result:** {info.get('Result', '*')}")
             st.divider()
+            
             if st.session_state.current_ply > 0:
                 move_data = analysis[st.session_state.current_ply - 1]
                 st.subheader(f"Move {move_data['move_number']}: {move_data['color']}")
@@ -290,7 +317,23 @@ elif tab == "Game Analysis":
                 elif quality == "Good": st.info(f"**{quality}.** {move_data['comment']}")
                 elif quality == "Inaccuracy": st.warning(f"**{quality}.** {move_data['comment']}")
                 else: st.error(f"**{quality}!** {move_data['comment']}")
-            else: st.subheader("Starting Position"); st.info("Use the navigation buttons to step through the game.")
+                
+                # Display Top Engine Lines
+                st.markdown("---")
+                st.subheader("Engine's Top Choices")
+                
+                # Use the board state *before* the move was made to get correct SAN for engine lines
+                board_before_move = chess.Board(st.session_state.board_states[st.session_state.current_ply - 1])
+                top_moves = analysis[st.session_state.current_ply - 1].get('top_moves', [])
+                for i, top_move in enumerate(top_moves):
+                    move_uci = top_move['Move']
+                    san = board_before_move.san(chess.Move.from_uci(move_uci))
+                    eval_cp = top_move.get('Centipawn')
+                    eval_str = f"{eval_cp/100.0:.2f}" if eval_cp is not None else "N/A"
+                    st.markdown(f"**{i+1}.** `{san}` (Eval: {eval_str})")
+            else:
+                st.subheader("Starting Position")
+                st.info("Use the navigation buttons to step through the game.")
         st.divider()
         st.header("🔍 Full Move List Analysis")
         df_display = pd.DataFrame(analysis)

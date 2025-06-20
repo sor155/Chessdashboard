@@ -7,4 +7,3 @@ python-chess
 stockfish
 datasets
 httpx
-

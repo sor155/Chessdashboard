@@ -23,12 +23,34 @@ FRIENDS = [
     ("Ulysse", "realulysse"), ("Simon", "poulet_tao"), ("Adrien", "adrienbourque"),
     ("Alex", "naatiry"), ("Kevin", "kevor24"),
 ]
-HEADERS = {"User-Agent": "ChessDashboard/Final-v8.0"}
+HEADERS = {"User-Agent": "ChessDashboard/Final-v9.0"}
 
-# --- IMPORTANT: PATH CORRECTION ---
-# This now uses the system-installed stockfish package.
-# This requires a packages.txt file for Streamlit Cloud deployment.
-STOCKFISH_PATH = "stockfish"
+# --- STOCKFISH PATH CONFIGURATION (THE FIX) ---
+# This function makes the app work both locally (Windows) and deployed (Linux).
+def get_stockfish_path():
+    """
+    Determines the correct path for the Stockfish executable.
+    Prioritizes the standard Linux path for deployed environments.
+    """
+    # Path for deployed Streamlit Cloud environment
+    linux_path = "/usr/games/stockfish"
+    if os.path.exists(linux_path):
+        return linux_path
+    
+    # Path for your local Windows environment
+    windows_path = "C:/Users/theso/OneDrive/Desktop/Chess test/stockfish.exe"
+    if os.path.exists(windows_path):
+        return windows_path
+        
+    # Fallback for other Linux distributions
+    alt_linux_path = "/usr/bin/stockfish"
+    if os.path.exists(alt_linux_path):
+        return alt_linux_path
+
+    # If neither is found, return None
+    return None
+
+STOCKFISH_PATH = get_stockfish_path()
 
 # --- SESSION STATE INITIALIZATION ---
 if 'analysis_results' not in st.session_state: st.session_state.analysis_results = None
@@ -70,48 +92,30 @@ def get_opening_name(game_data):
     try:
         pgn_headers = chess.pgn.read_headers(io.StringIO(pgn_text))
         if not pgn_headers: return "Unknown"
-
-        # Method 1: Use ECO code (most reliable)
         eco = pgn_headers.get("ECO")
-        if eco and eco in eco_map:
-            return eco_map[eco]
-
-        # Method 2: Use direct Opening tag
+        if eco and eco in eco_map: return eco_map[eco]
         opening = pgn_headers.get("Opening")
-        if opening:
-            return opening
-
-        # Method 3: Fallback to move sequence analysis
+        if opening: return opening
         game = chess.pgn.read_game(io.StringIO(pgn_text))
         if not game: return "Unknown"
-        
-        board = game.board()
-        moves_san = []
-        last_known_opening = "Unknown"
-        
+        board, moves_san, last_known_opening = game.board(), [], "Unknown"
         for move in game.mainline_moves():
-            moves_san.append(board.san(move))
-            board.push(move)
+            moves_san.append(board.san(move)); board.push(move)
             current_sequence = " ".join(moves_san)
-            if current_sequence in pgn_map:
-                last_known_opening = pgn_map[current_sequence]
+            if current_sequence in pgn_map: last_known_opening = pgn_map[current_sequence]
             if len(moves_san) >= 15: break
-        
         return last_known_opening
-    except Exception:
-        return "Unknown"
+    except Exception: return "Unknown"
 
 @st.cache_data(ttl=3600, show_spinner="Fetching latest player stats from Chess.com...")
 def get_live_player_analysis(username):
     """Fetches and computes detailed player stats by analyzing recent game archives."""
     async def fetch_and_compute():
         async with httpx.AsyncClient() as client:
-            profile_task = client.get(f"https://api.chess.com/pub/player/{username}", headers=HEADERS)
-            archives_task = client.get(f"https://api.chess.com/pub/player/{username}/games/archives", headers=HEADERS)
+            profile_task, archives_task = client.get(f"https://api.chess.com/pub/player/{username}", headers=HEADERS), client.get(f"https://api.chess.com/pub/player/{username}/games/archives", headers=HEADERS)
             profile_res, archives_res = await asyncio.gather(profile_task, archives_task)
             if profile_res.is_error or archives_res.is_error: return {"error": "API request failed."}, None
-            avatar_url = profile_res.json().get("avatar")
-            archive_urls = archives_res.json().get("archives", [])[-4:]
+            avatar_url, archive_urls = profile_res.json().get("avatar"), archives_res.json().get("archives", [])[-4:]
             if not archive_urls: return {"error": "No game archives found."}, avatar_url
             game_responses = await asyncio.gather(*[client.get(url, headers=HEADERS) for url in archive_urls])
             all_games = [game for res in game_responses if not res.is_error for game in res.json().get("games", [])]
@@ -123,12 +127,12 @@ def get_live_player_analysis(username):
                 opening_name = get_opening_name(g)
                 white, black, accuracies = g.get("white",{}), g.get("black",{}), g.get("accuracies",{})
                 if white.get("username","").lower() == username_lower:
-                    stats["total_white"]+=1
+                    stats["total_white"]+=1;
                     if white.get("result")=="win": stats["wins_white"]+=1
                     if opening_name!="Unknown": stats["white_openings"][opening_name]+=1
                     if "white" in accuracies: stats["white_accuracies"].append(accuracies["white"])
                 elif black.get("username","").lower() == username_lower:
-                    stats["total_black"]+=1
+                    stats["total_black"]+=1;
                     if black.get("result")=="win": stats["wins_black"]+=1
                     if opening_name!="Unknown": stats["black_openings"][opening_name]+=1
                     if "black" in accuracies: stats["black_accuracies"].append(accuracies["black"])
@@ -137,12 +141,13 @@ def get_live_player_analysis(username):
 
 @st.cache_data(ttl=3600, show_spinner="Analyzing game with local engine...")
 def analyze_game_with_stockfish(pgn_data):
-    # This now uses the STOCKFISH_PATH variable defined at the top of the script
+    if not STOCKFISH_PATH:
+        st.error("Stockfish engine not found. Please ensure it is installed and the path is configured correctly in the script.")
+        return None, None, None
     try:
         stockfish = Stockfish(path=STOCKFISH_PATH, parameters={"Threads": 2, "Hash": 256})
     except Exception as e:
-        st.error(f"Could not initialize Stockfish from path '{STOCKFISH_PATH}'. Please ensure it is installed and the path is correct. Error: {e}")
-        return None, None, None
+        st.error(f"Could not initialize Stockfish from path '{STOCKFISH_PATH}'. Error: {e}"); return None, None, None
     try:
         game = chess.pgn.read_game(io.StringIO(pgn_data))
         if not game: st.error("Invalid PGN data."); return None, None, None
@@ -153,13 +158,12 @@ def analyze_game_with_stockfish(pgn_data):
             turn = "White" if board.turn == chess.WHITE else "Black"
             status_text.text(f"Analyzing move {i + 1}/{len(moves)} ({turn}'s turn)...")
             stockfish.set_fen_position(board.fen())
-            eval_before = stockfish.get_evaluation().get('value')
-            best_move_uci = stockfish.get_best_move()
+            eval_before, best_move_uci = stockfish.get_evaluation().get('value'), stockfish.get_best_move()
             best_move_san = board.san(chess.Move.from_uci(best_move_uci)) if best_move_uci else "N/A"
             board.push(move); states.append(board.fen())
             stockfish.set_fen_position(board.fen())
             eval_after = stockfish.get_evaluation().get('value')
-            eval_loss = (eval_before - eval_after) if turn == "White" else (eval_after - eval_before) if isinstance(eval_before, int) and isinstance(eval_after, int) else 0
+            eval_loss = (eval_before - eval_after) if turn=="White" else (eval_after - eval_before) if isinstance(eval_before, int) and isinstance(eval_after, int) else 0
             quality = "Excellent" if eval_loss < 20 else "Good" if eval_loss < 50 else "Inaccuracy" if eval_loss < 100 else "Mistake" if eval_loss < 200 else "Blunder"
             move_data = {'ply':i+1,'move_number':(i//2)+1,'color':turn,'move':board.san(move),'best_move':best_move_san,'eval_loss':eval_loss/100.0,'move_quality':quality}
             move_data['comment'] = f"Best was {best_move_san}." if quality not in ["Excellent", "Good"] else f"{quality} move."
@@ -170,6 +174,8 @@ def analyze_game_with_stockfish(pgn_data):
     except Exception as e:
         st.error(f"🔥 Error during analysis: {e}\n{traceback.format_exc()}"); return None, None, None
 
+# --- All UI code is below ---
+# ...
 def create_eval_bar(evaluation):
     if evaluation is None: evaluation = 0
     clamped_eval = max(-1000, min(1000, evaluation))
@@ -177,32 +183,26 @@ def create_eval_bar(evaluation):
     eval_in_pawns = evaluation / 100.0
     return f"""<div style="position:relative;background-color:#333;border:1px solid #555;height:25px;width:100%;border-radius:5px;overflow:hidden;"><div style="background-color:white;height:100%;width:{percentage}%;"></div><div style="position:absolute;top:0;left:0;width:100%;height:100%;text-align:center;color:{'black' if 40<percentage<60 else 'white'};line-height:25px;font-size:0.9em;">Eval: {eval_in_pawns:.2f}</div></div>"""
 
-# --- UI LAYOUT ---
 tab = st.sidebar.radio("Navigate", ["Dashboard", "Player Stats", "Game Analysis"])
 
 if tab == "Dashboard":
     st.title("♟️ Chess Rating Dashboard")
     st.subheader("Current Ratings (From Database)")
     df_current = fetch_from_db("current_ratings")
-    if not df_current.empty:
-        st.dataframe(df_current.set_index('friend_name'), use_container_width=True)
-    else:
-        st.warning("No ratings data found. Run `update_tracker_sqlite.py` to populate the database.")
+    if not df_current.empty: st.dataframe(df_current.set_index('friend_name'), use_container_width=True)
+    else: st.warning("No ratings data found. Run `update_tracker_sqlite.py` to populate the database.")
     st.subheader("Rating Progression")
     df_history = fetch_from_db("rating_history")
     if not df_history.empty:
         df_history["Date"] = pd.to_datetime(df_history["timestamp"])
         df_history["Day"] = df_history["Date"].dt.date
-        default_players = sorted(df_history["player_name"].unique())
-        selected_players = st.sidebar.multiselect("Filter by Player", default_players, default=default_players)
-        all_categories = sorted(df_history["category"].unique())
-        selected_category = st.sidebar.selectbox("Filter by Category", ["All Categories"] + all_categories)
-        min_date, max_date = df_history["Day"].min(), df_history["Day"].max()
-        selected_dates = st.sidebar.date_input("Select date range", [min_date, max_date])
-        start_date, end_date = (selected_dates[0], selected_dates[1]) if len(selected_dates) == 2 else (min_date, max_date)
-        mask = (df_history["Day"].between(start_date, end_date)) & (df_history["player_name"].isin(selected_players)) & (df_history["category"] == selected_category if selected_category != "All Categories" else True)
-        daily = df_history[mask].groupby(["Day", "player_name", "category"]).last().reset_index()
-        chart = alt.Chart(daily).mark_line(point=True).encode(
+        players = st.sidebar.multiselect("Filter by Player", sorted(df_history["player_name"].unique()), default=sorted(df_history["player_name"].unique()))
+        category = st.sidebar.selectbox("Filter by Category", ["All Categories"] + sorted(df_history["category"].unique()))
+        min_d, max_d = df_history["Day"].min(), df_history["Day"].max()
+        dates = st.sidebar.date_input("Select date range", [min_d, max_d])
+        start_d, end_d = (dates[0], dates[1]) if len(dates) == 2 else (min_d, max_d)
+        mask = (df_history["Day"].between(start_d, end_d)) & (df_history["player_name"].isin(players)) & (df_history["category"] == category if category != "All Categories" else True)
+        chart = alt.Chart(df_history[mask].groupby(["Day","player_name","category"]).last().reset_index()).mark_line(point=True).encode(
             x=alt.X("Day:T", title="Date"), y=alt.Y("rating:Q", title="Rating"),
             color=alt.Color("player_name:N", title="Player"), strokeDash=alt.StrokeDash("category:N", title="Category"),
             tooltip=["Day:T", "player_name:N", "category:N", "rating:Q"]
@@ -214,43 +214,30 @@ elif tab == "Player Stats":
     if not pgn_map: st.warning("Opening dataset could not be loaded. Opening analysis will be unavailable.", icon="⚠️")
     choice = st.selectbox("Choose a player", [name for name, _ in FRIENDS])
     username = next(user for name, user in FRIENDS if name == choice)
-    stats_data, avatar_url = get_live_player_analysis(username)
-    col1, col2 = st.columns([1, 5])
-    with col1:
-        if avatar_url: st.image(avatar_url, width=100)
-    with col2:
-        st.header(choice)
-        st.markdown(f"*{username} on Chess.com*")
-    if "error" in stats_data:
-        st.error(f"Could not retrieve live analysis for {choice}. Reason: {stats_data['error']}")
+    stats, avatar = get_live_player_analysis(username)
+    c1, c2 = st.columns([1, 5])
+    if avatar: c1.image(avatar, width=100)
+    c2.header(choice); c2.markdown(f"*{username} on Chess.com*")
+    if "error" in stats: st.error(f"Could not get live analysis: {stats['error']}")
     else:
         st.subheader("Performance by Color (Last 4 Months)")
         c1, c2 = st.columns(2)
-        c1.metric("Win Rate as White", stats_data['winrate_white'])
-        c1.metric("Avg Accuracy as White", stats_data['avg_accuracy_white'])
-        c2.metric("Win Rate as Black", stats_data['winrate_black'])
-        c2.metric("Avg Accuracy as Black", stats_data['avg_accuracy_black'])
+        c1.metric("Win Rate as White", stats['winrate_white']); c1.metric("Avg Accuracy as White", stats['avg_accuracy_white'])
+        c2.metric("Win Rate as Black", stats['winrate_black']); c2.metric("Avg Accuracy as Black", stats['avg_accuracy_black'])
         st.subheader("Favorite Openings (Last 4 Months)")
         c1, c2 = st.columns(2)
-        c1.markdown("**As White**")
-        df_white = pd.DataFrame(stats_data["top_openings_white"], columns=["Opening", "Games"])
-        c1.dataframe(df_white, use_container_width=True, hide_index=True)
-        c2.markdown("**As Black**")
-        df_black = pd.DataFrame(stats_data["top_openings_black"], columns=["Opening", "Games"])
-        c2.dataframe(df_black, use_container_width=True, hide_index=True)
+        c1.markdown("**As White**"); c1.dataframe(pd.DataFrame(stats["top_openings_white"], columns=["Opening", "Games"]), hide_index=True, use_container_width=True)
+        c2.markdown("**As Black**"); c2.dataframe(pd.DataFrame(stats["top_openings_black"], columns=["Opening", "Games"]), hide_index=True, use_container_width=True)
     st.subheader(f"{choice}'s Rating Progression (From Database)")
-    df_player_hist = fetch_from_db("rating_history")
-    if not df_player_hist.empty:
-        df_player_hist = df_player_hist[df_player_hist["player_name"] == choice]
-        if not df_player_hist.empty:
-            df_player_hist["Date"] = pd.to_datetime(df_player_hist["timestamp"])
-            player_chart = alt.Chart(df_player_hist).mark_line(point=True).encode(
-                x=alt.X("Date:T", title="Date"), y=alt.Y("rating:Q", title="Rating"),
-                color=alt.Color("category:N", title="Category"), tooltip=["Date:T", "category:N", "rating:Q"]
-            ).interactive()
-            st.altair_chart(player_chart, use_container_width=True)
-        else:
-            st.info(f"No rating history for {choice} found in the database.")
+    df_player = fetch_from_db("rating_history")
+    if not df_player.empty and not df_player[df_player["player_name"] == choice].empty:
+        df_player = df_player[df_player["player_name"] == choice]
+        df_player["Date"] = pd.to_datetime(df_player["timestamp"])
+        chart = alt.Chart(df_player).mark_line(point=True).encode(
+            x=alt.X("Date:T", title="Date"), y=alt.Y("rating:Q", title="Rating"),
+            color=alt.Color("category:N", title="Category"), tooltip=["Date:T", "category:N", "rating:Q"]
+        ).interactive()
+        st.altair_chart(chart, use_container_width=True)
 
 elif tab == "Game Analysis":
     st.title("🔍 Game Analysis")
@@ -261,14 +248,10 @@ elif tab == "Game Analysis":
         if st.session_state.pgn_text.strip():
             st.session_state.current_ply = 0
             info, analysis, boards = analyze_game_with_stockfish(st.session_state.pgn_text)
-            if info and analysis and boards:
-                st.session_state.analysis_results, st.session_state.board_states = (info, analysis), boards
-                st.rerun()
-        else:
-            st.error("Please paste a PGN to analyze.")
+            if info and analysis and boards: st.session_state.analysis_results, st.session_state.board_states = (info, analysis), boards; st.rerun()
+        else: st.error("Please paste a PGN to analyze.")
     if c2.button("Clear Analysis", use_container_width=True):
-        st.session_state.analysis_results, st.session_state.board_states, st.session_state.pgn_text, st.session_state.current_ply = None, None, "", 0
-        st.rerun()
+        st.session_state.analysis_results, st.session_state.board_states, st.session_state.pgn_text, st.session_state.current_ply = None, None, "", 0; st.rerun()
     if st.session_state.analysis_results:
         info, analysis = st.session_state.analysis_results
         board_col, comment_col = st.columns([1, 1.2])
@@ -278,12 +261,8 @@ elif tab == "Game Analysis":
             current_eval = analysis[st.session_state.current_ply - 1]['eval_after'] if st.session_state.current_ply > 0 else 20
             st.markdown(create_eval_bar(current_eval), unsafe_allow_html=True)
             nav1, nav2 = st.columns(2)
-            if nav1.button("⬅️ Previous", use_container_width=True, disabled=(st.session_state.current_ply == 0)):
-                st.session_state.current_ply -= 1
-                st.rerun()
-            if nav2.button("Next ➡️", use_container_width=True, disabled=(st.session_state.current_ply >= len(st.session_state.board_states) - 1)):
-                st.session_state.current_ply += 1
-                st.rerun()
+            if nav1.button("⬅️ Previous", use_container_width=True, disabled=(st.session_state.current_ply == 0)): st.session_state.current_ply -= 1; st.rerun()
+            if nav2.button("Next ➡️", use_container_width=True, disabled=(st.session_state.current_ply >= len(st.session_state.board_states) - 1)): st.session_state.current_ply += 1; st.rerun()
         with comment_col:
             st.markdown(f"**White:** {info.get('White', 'N/A')} | **Black:** {info.get('Black', 'N/A')} | **Result:** {info.get('Result', '*')}")
             st.divider()
@@ -296,9 +275,7 @@ elif tab == "Game Analysis":
                 elif quality == "Good": st.info(f"**{quality}.** {move_data['comment']}")
                 elif quality == "Inaccuracy": st.warning(f"**{quality}.** {move_data['comment']}")
                 else: st.error(f"**{quality}!** {move_data['comment']}")
-            else:
-                st.subheader("Starting Position")
-                st.info("Use the navigation buttons to step through the game.")
+            else: st.subheader("Starting Position"); st.info("Use the navigation buttons to step through the game.")
         st.divider()
         st.header("🔍 Full Move List Analysis")
         df_display = pd.DataFrame(analysis)

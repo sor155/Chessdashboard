@@ -47,14 +47,3 @@ jobs:
         # This is the key step where your Python script runs and updates the .db file.
         run: python update_tracker_sqlite.py
       
-      - name: Commit and push if database changed
-        # This step checks if the chess_ratings.db file was modified.
-        # If it was, it commits the file and pushes it back to your repository.
-        run: |
-          git config --global user.name 'github-actions[bot]'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          git add chess_ratings.db
-          # The 'git commit' command will fail if there are no changes,
-          # so we use '|| exit 0' to prevent the workflow from failing.
-          git commit -m "Automated database update" || exit 0
-          git push

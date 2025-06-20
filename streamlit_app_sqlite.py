@@ -53,6 +53,8 @@ if 'analysis_results' not in st.session_state: st.session_state.analysis_results
 if 'board_states' not in st.session_state: st.session_state.board_states = None
 if 'pgn_text' not in st.session_state: st.session_state.pgn_text = ""
 if 'current_ply' not in st.session_state: st.session_state.current_ply = 0
+if 'board' not in st.session_state:
+    st.session_state.board = chess.Board()
 
 # --- DATA LOADING ---
 @st.cache_resource
@@ -208,6 +210,22 @@ def analyze_game_with_stockfish(pgn_data):
     except Exception as e:
         st.error(f"🔥 Error during analysis: {e}\n{traceback.format_exc()}"); return None, None, None
 
+@st.cache_data(show_spinner="Analyzing position...")
+def analyze_position_with_stockfish(fen):
+    """Analyzes a single board position (FEN) with Stockfish."""
+    if not STOCKFISH_PATH:
+        st.error("Stockfish engine not found.")
+        return None
+    try:
+        stockfish = Stockfish(path=STOCKFISH_PATH, parameters={"Threads": 2, "Hash": 512})
+        stockfish.set_fen_position(fen)
+        evaluation = stockfish.get_evaluation()
+        top_moves = stockfish.get_top_moves(3)
+        return {"evaluation": evaluation, "top_moves": top_moves}
+    except Exception as e:
+        st.error(f"Error during position analysis: {e}")
+        return None
+
 def create_eval_bar(evaluation):
     if evaluation is None: evaluation = 0
     clamped_eval = max(-1000, min(1000, evaluation))
@@ -216,7 +234,7 @@ def create_eval_bar(evaluation):
     return f"""<div style="position:relative;background-color:#333;border:1px solid #555;height:25px;width:100%;border-radius:5px;overflow:hidden;"><div style="background-color:white;height:100%;width:{percentage}%;"></div><div style="position:absolute;top:0;left:0;width:100%;height:100%;text-align:center;color:{'black' if 40<percentage<60 else 'white'};line-height:25px;font-size:0.9em;">Eval: {eval_in_pawns:.2f}</div></div>"""
 
 # --- UI LAYOUT ---
-tab = st.sidebar.radio("Navigate", ["Dashboard", "Player Stats", "Game Analysis"])
+tab = st.sidebar.radio("Navigate", ["Dashboard", "Player Stats", "Game Analysis", "Interactive Analysis"])
 
 if tab == "Dashboard":
     st.title("♟️ Chess Rating Dashboard")
@@ -289,19 +307,16 @@ elif tab == "Game Analysis":
     if st.session_state.analysis_results:
         info, analysis = st.session_state.analysis_results
         
-        # --- RESPONSIVE LAYOUT FOR ANALYSIS ---
-        # On wide screens, use columns. On mobile, Streamlit stacks them automatically.
         board_col, comment_col = st.columns([1, 1.3])
         
         with board_col:
             current_board = chess.Board(st.session_state.board_states[st.session_state.current_ply])
             
-            # Draw an arrow for the best move
             arrow = []
             if st.session_state.current_ply < len(analysis):
                 best_move_uci = analysis[st.session_state.current_ply].get('top_moves', [])[0]['Move']
                 move = chess.Move.from_uci(best_move_uci)
-                arrow.append(chess.svg.Arrow(move.from_square, move.to_square, color="#6B17CC")) # Green arrow
+                arrow.append(chess.svg.Arrow(move.from_square, move.to_square, color="#6B17CC"))
             
             st.image(chess.svg.board(board=current_board, arrows=arrow, size=400), use_container_width=True)
             
@@ -325,7 +340,6 @@ elif tab == "Game Analysis":
                 elif quality == "Inaccuracy": st.warning(f"**{quality}.** {move_data['comment']}")
                 else: st.error(f"**{quality}!** {move_data['comment']}")
                 
-                # Display Top Engine Lines
                 st.markdown("---")
                 st.subheader("Engine's Top Choices")
                 
@@ -333,7 +347,7 @@ elif tab == "Game Analysis":
                 top_moves = analysis[st.session_state.current_ply - 1].get('top_moves', [])
                 for i, top_move in enumerate(top_moves):
                     move_uci = top_move['Move']
-                    san = board_before_move.san(chess.Move.from_uci(move_uci))
+                    san = board_before_move.san( chess.Move.from_uci(move_uci))
                     eval_cp = top_move.get('Centipawn')
                     eval_str = f"{eval_cp/100.0:.2f}" if eval_cp is not None else "N/A"
                     st.markdown(f"**{i+1}.** `{san}` (Eval: {eval_str})")
@@ -341,8 +355,64 @@ elif tab == "Game Analysis":
                 st.subheader("Starting Position")
                 st.info("Use the navigation buttons to step through the game.")
         
-        # --- Use an expander for the full move list to save space ---
         with st.expander("Show Full Move List Analysis"):
             df_display = pd.DataFrame(analysis)
             st.dataframe(df_display[['move_number', 'color', 'move', 'best_move', 'eval_loss', 'move_quality']], use_container_width=True, hide_index=True)
             st.download_button("📥 Download Analysis (CSV)", df_display.to_csv(index=False), f"analysis_{info.get('White','N_A')}_vs_{info.get('Black','N_A')}.csv", "text/csv")
+
+elif tab == "Interactive Analysis":
+    st.title("🔬 Interactive Analysis Board")
+    st.markdown("Enter a move in the text box below (e.g., e4, Nf3) and click 'Make Move'.")
+    
+    board_col, analysis_col = st.columns([1, 1.2])
+
+    with board_col:
+        # Display the board using chess.svg.board. The pieces will always be visible.
+        board_svg = chess.svg.board(board=st.session_state.board, size=550)
+        st.image(board_svg, use_container_width=True)
+
+        # Form for move input
+        with st.form(key="move_form", clear_on_submit=True):
+            move_input = st.text_input("Enter your move (e.g. e4, Nf3):")
+            submit_button = st.form_submit_button("Make Move")
+
+        # This logic now correctly handles the state update after the form is submitted.
+        if submit_button and move_input:
+            try:
+                st.session_state.board.push_san(move_input)
+                st.rerun()
+            except ValueError:
+                st.error("Invalid move. Please try again.")
+
+        analysis = analyze_position_with_stockfish(st.session_state.board.fen())
+        eval_value = 0
+        if analysis and analysis.get('evaluation') and analysis.get('evaluation').get('value') is not None:
+            eval_value = analysis['evaluation']['value']
+        
+        st.markdown(create_eval_bar(eval_value), unsafe_allow_html=True)
+        
+        if st.button("Reset Board"):
+            st.session_state.board.reset()
+            st.rerun()
+
+    with analysis_col:
+        st.subheader("Engine Analysis")
+        if not st.session_state.board.is_game_over():
+            analysis = analyze_position_with_stockfish(st.session_state.board.fen())
+            if analysis:
+                st.markdown("#### Top 3 Engine Moves:")
+                if analysis.get('top_moves'):
+                    for move in analysis['top_moves']:
+                        try:
+                            san_move = st.session_state.board.san(chess.Move.from_uci(move['Move']))
+                            eval_cp = move.get('Centipawn')
+                            eval_pawns = eval_cp / 100.0 if eval_cp is not None else "N/A"
+                            st.markdown(f"- **{san_move}** (Evaluation: {eval_pawns})")
+                        except Exception:
+                            continue
+                else:
+                    st.info("No top moves found.")
+            else:
+                st.info("Make a move to see the analysis.")
+        else:
+            st.success(f"Game over: {st.session_state.board.result()}")
